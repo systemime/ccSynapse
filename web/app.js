@@ -902,8 +902,8 @@ function canvasConnectors(cards) {
     const parent = card.parentId === null ? null : index.get(card.parentId)
     if (parent === undefined || parent === null) return ''
     const active = card.dshThreadId === state.activeId && parent.dshThreadId === state.activeId ? ' active-connector' : ''
-    const fromDot = state.pendingReplies.has(parent.dshSessionId)
-    const toDot = state.pendingReplies.has(card.dshSessionId)
+    const fromDot = state.pendingReplies.has(parent.dshSessionId) || (parent.answer === null && parent.error === null)
+    const toDot = state.pendingReplies.has(card.dshSessionId) || (card.answer === null && card.error === null)
     const dims = { fromW: fromDot ? DOT_SIZE : CARD_WIDTH, fromH: fromDot ? DOT_SIZE : CARD_HEIGHT, toH: toDot ? DOT_SIZE : CARD_HEIGHT }
     return `<path class="${active.trim()}" data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position, dims)}"></path>`
   })
@@ -915,9 +915,12 @@ function canvasConnectors(cards) {
 }
 
 function conversationCard(card, graph) {
-  if (card.dshSessionId !== null && state.pendingReplies.has(card.dshSessionId)) {
+  const isPending = card.dshSessionId !== null && state.pendingReplies.has(card.dshSessionId)
+  const hasNoAssistantReply = card.answer === null && card.error === null
+  if (isPending || hasNoAssistantReply) {
     const selected = card.id === state.selectedCardId ? ' selected' : ''
-    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="等待回复（第 ${card.turnIndex + 1} 轮）"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
+    const label = isPending ? `等待回复（第 ${card.turnIndex + 1} 轮）` : `等待助手（第 ${card.turnIndex + 1} 轮）`
+    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
   }
   const selected = card.id === state.selectedCardId ? 'selected' : ''
   const source = card.parentId === null ? 'Claude Code 会话' : card.turnIndex === 0 ? 'Claude Code 分支' : '追问'
