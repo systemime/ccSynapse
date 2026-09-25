@@ -64,6 +64,7 @@ const state = {
   canvasCards: undefined, canvasCardsById: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false,
   detailScrollByThread: new Map(), detailThreadId: null, detailTargetCardId: null,
   inspectorCardId: null, inspectorOpening: false, inspectorScrollByCard: new Map(),
+  collapsedTreeNodes: new Set(),
 }
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]))
@@ -1206,6 +1207,37 @@ function renderThread() {
   return `<section class="detail-view"><header class="detail-head"><div class="detail-head-title"><div class="detail-head-meta"><span class="detail-badge">${thread.parentId === null ? '会话' : '分支'}</span>${thread.dshSessionTitle ?? thread.title ? `<span class="detail-subtitle">${escapeHtml(thread.dshSessionTitle ?? thread.title)}</span>` : ''}</div><h1>${escapeHtml(questionFor(thread))}</h1></div><div class="detail-head-actions"><button data-action="open-dsh" data-thread="${thread.id}" data-seq="${Number.isInteger(latestAssistantSeq) ? latestAssistantSeq : ''}" title="在原生对话中打开此会话">在 Claude Code 中打开</button><button data-action="open-branch" data-thread="${thread.id}" title="基于最新回答创建分支">创建分支</button><button class="primary" data-action="show-canvas">返回画布</button></div></header><div class="detail-scroll">${messages.map(message => threadMessage(thread, message)).join('') || '<div class="note-empty">等待这条会话的第一条消息。</div>'}</div><form class="message-composer" data-compose="${thread.id}"><textarea maxlength="4000" placeholder="继续当前会话…" ${waiting ? 'disabled' : ''}></textarea><button class="primary" type="submit" ${waiting ? 'disabled' : ''}>${waiting ? '等待回复' : '发送'}</button></form></section>`
 }
 
+function buildThreadTree(threads) {
+  const byId = new Map(threads.map(t => [t.id, { thread: t, children: [] }]))
+  const roots = []
+  for (const node of byId.values()) {
+    const parentNode = node.thread.parentId !== null ? byId.get(node.thread.parentId) : undefined
+    if (parentNode !== undefined) parentNode.children.push(node)
+    else roots.push(node)
+  }
+  return roots
+}
+
+function renderThreadNode(node, depth) {
+  const { thread, children } = node
+  const collapsed = state.collapsedTreeNodes.has(thread.id)
+  const hasChildren = children.length > 0
+  const arrowHtml = hasChildren
+    ? `<button class="tree-arrow${collapsed ? '' : ' open'}" data-action="toggle-tree-node" data-thread="${thread.id}" aria-label="${collapsed ? '展开' : '折叠'}" aria-expanded="${collapsed ? 'false' : 'true'}">▶</button>`
+    : `<span class="tree-arrow-gap"></span>`
+  const indent = depth * 12
+  const hiddenCount = collapsed ? children.length : 0
+  const badge = hiddenCount > 0 ? `<i>+${hiddenCount}</i>` : (thread.parentId !== null && depth === 0 ? '<i>分支</i>' : '')
+  const row = `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--tree-indent:${indent}px;--thread-color:#374151"><span class="tree-indent-spacer"></span>${arrowHtml}<span class="tree-dot"></span><span class="tree-label">${escapeHtml(threadListTitle(thread))}</span>${badge}</button>`
+  const childRows = (!collapsed && hasChildren) ? children.flatMap(child => renderThreadNode(child, depth + 1)).join('') : ''
+  return row + childRows
+}
+
+function renderThreadTree(threads) {
+  if (threads.length === 0) return '<p class="tree-empty">暂未同步会话</p>'
+  return buildThreadTree(threads).flatMap(root => renderThreadNode(root, 0)).join('')
+}
+
 function render() {
   // Remember the departing thread's scroll position per thread id, so
   // switching sessions restores each conversation's own place instead of
@@ -1242,7 +1274,7 @@ function render() {
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   const archivedSection = state.archivedSessionIds.length === 0 ? '' : `<div class="sidebar-heading"><span>已归档</span></div><nav class="thread-tree">${state.archivedSessionIds.map(id => `<button class="tree-row" data-action="unarchive-session" data-session="${escapeHtml(id)}" title="恢复此会话"><span class="tree-dot"></span><span>${escapeHtml(id.slice(0, 8))}…</span><i>恢复</i></button>`).join('')}</nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${threads.map(thread => `<button class="tree-row ${thread.id === state.activeId ? 'active' : ''}" data-action="select-thread" data-thread="${thread.id}" style="--thread-color:#374151"><span class="tree-dot"></span><span>${escapeHtml(threadListTitle(thread))}</span>${thread.parentId === null ? '' : '<i>分支</i>'}</button>`).join('') || '<p class="tree-empty">暂未同步会话</p>'}</nav>${archivedSection}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="close" type="button" aria-pressed="false">对话</button><button class="active" type="button" aria-pressed="true">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}${selectionFollowupButton()}</section></main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${renderThreadTree(threads)}</nav>${archivedSection}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="show-thread" data-thread="${state.activeId ?? currentThread()?.id ?? ''}" type="button" ${detailAvailable ? '' : 'disabled'} aria-pressed="${state.mode === 'thread' ? 'true' : 'false'}">对话</button><button class="${state.mode === 'canvas' ? 'active' : ''}" type="button" aria-pressed="${state.mode === 'canvas' ? 'true' : 'false'}" data-action="show-canvas">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}${selectionFollowupButton()}</section></main>`
   installDragging()
   cacheCardConnectors()
   // The initial camera from renderCanvas is inset (viewport not laid out yet);
@@ -1637,6 +1669,12 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'close') post('synapse:close')
     if (button.dataset.action === 'close-card-inspector') { closeCardInspector(); return }
     if (button.dataset.action === 'toggle-sidebar') { state.sidebarCollapsed = !state.sidebarCollapsed; render() }
+    if (button.dataset.action === 'toggle-tree-node' && button.dataset.thread !== undefined) {
+      const nodeId = button.dataset.thread
+      state.collapsedTreeNodes.has(nodeId) ? state.collapsedTreeNodes.delete(nodeId) : state.collapsedTreeNodes.add(nodeId)
+      render()
+      return
+    }
     if (button.dataset.action === 'create-session') openNewSession()
     if (button.dataset.action === 'open-current' && state.currentDsh !== null) post('synapse:open-session', { sessionId: state.currentDsh.id })
     if (button.dataset.action === 'select-thread' && thread !== undefined) {
