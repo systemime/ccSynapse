@@ -1236,9 +1236,39 @@ function renderThreadNode(node, depth) {
   return row + childRows
 }
 
+function groupRootsByDate(roots) {
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
+  const groups = new Map()
+  for (const node of roots) {
+    const d = new Date(node.thread.updatedAt ?? 0); d.setHours(0, 0, 0, 0)
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+    const key = `date-group:${iso}`
+    if (!groups.has(key)) {
+      const label = d.getTime() === today.getTime() ? '今天' : d.getTime() === yesterday.getTime() ? '昨天' : `${d.getMonth()+1}月${d.getDate()}日`
+      groups.set(key, { key, label, nodes: [], ts: d.getTime() })
+    }
+    groups.get(key).nodes.push(node)
+  }
+  return [...groups.values()]
+}
+
 function renderThreadTree(threads) {
   if (threads.length === 0) return '<p class="tree-empty">暂未同步会话</p>'
-  return buildThreadTree(threads).flatMap(root => renderThreadNode(root, 0)).join('')
+  const roots = buildThreadTree(threads)
+  const groups = groupRootsByDate(roots)
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+  return groups.map(({ key, label, nodes, ts }) => {
+    const isOld = ts < cutoff
+    const inSet = state.collapsedTreeNodes.has(key)
+    // Old groups are collapsed by default; new groups are open by default.
+    // "inSet" flips the default: for old groups it means "user opened", for new groups "user closed".
+    const collapsed = isOld ? !inSet : inSet
+    const arrow = `<span class="tree-date-arrow${collapsed ? '' : ' open'}">▶</span>`
+    const header = `<button class="tree-date-label" data-action="toggle-date-group" data-group="${escapeHtml(key)}" aria-expanded="${collapsed ? 'false' : 'true'}">${arrow}${label}</button>`
+    const body = collapsed ? '' : nodes.flatMap(node => renderThreadNode(node, 0)).join('')
+    return `<div class="tree-date-group">${header}${body}</div>`
+  }).join('')
 }
 
 function render() {
@@ -1812,6 +1842,12 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'toggle-tree-node' && button.dataset.thread !== undefined) {
       const nodeId = button.dataset.thread
       state.collapsedTreeNodes.has(nodeId) ? state.collapsedTreeNodes.delete(nodeId) : state.collapsedTreeNodes.add(nodeId)
+      render()
+      return
+    }
+    if (button.dataset.action === 'toggle-date-group' && button.dataset.group !== undefined) {
+      const key = button.dataset.group
+      state.collapsedTreeNodes.has(key) ? state.collapsedTreeNodes.delete(key) : state.collapsedTreeNodes.add(key)
       render()
       return
     }
