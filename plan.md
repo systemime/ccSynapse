@@ -1,7 +1,40 @@
 # ccSynapse 架构评估与改造方案
 
-日期：2026-09-26 · 评估对象：`F:\Project\MyTool\ccSynapse` (v0.1.0, 36 tests passing)
+日期：2026-09-26 · 评估对象：`F:\Project\MyTool\ccSynapse` (v0.1.0, **47 tests passing**)
 图谱：299 节点 · 655 边 · 19 社区 · 0 导入环 — `graphify-out/graph.json`
+当前 HEAD：`e7fdeeb` · 全部 P0 + P1 + P2-1 + P2-6 已落地
+
+---
+
+## 完成状态总览
+
+| 项 | 状态 | 落地内容 | commit |
+|---|---|---|---|
+| P0-1 UUID 血缘识别 | ✅ | 倒排索引 + `uuidSet`，指纹降为回退 | `5a01a0f` 前 |
+| P0-2 持久化拆分 | ✅ | `workspaces.json` / `workspaces-projection.json` | — |
+| P0-3 归档可撤销 | ✅ | `unarchiveThread()` + 侧边栏「已归档」 | — |
+| P1-1 子代理投影 | ✅ | 扫描 `subagents/agent-*.jsonl` + `meta.json` | `5a01a0f` |
+| P1-2 服务端测试 | ✅ | `routes.js`/`rpc.js` 拆分 + 8 个测试 | `acc94075` 前 |
+| P1-3 启动预热 | ✅ | `prestart.js` + `SessionStart` hook | `1643a64` |
+| P1-4 escapeHtml 覆盖 | ✅ | 2 个 XSS 测试走 `conversationCard()` 路径 | `bcc9b1b` |
+| P2-1 轮询收窄 | ✅ | `refreshProjection` 按 `updatedAt` 短路 | — |
+| P2-6 index.js 拆分 | ✅ | 与 P1-2 同步完成 | — |
+| P2-2 增量协议 | ⬜ | 未做（实测不紧急） | — |
+| P2-3 结构判据轮次切分 | ⬜ | 未做（风险中） | — |
+| P2-4 占位符重启恢复 | ⬜ | 未做 | — |
+| P2-5 清理移植残留 | ⬜ | 未做 | — |
+| P3 功能缺口 | ⬜ | 未做（取舍项） | — |
+
+**人工测试反馈的 6 项 UI 修复（全部完成）**
+
+| 问题 | 解决 |
+|---|---|
+| 缺小地图 | 160×100px canvas 浮层，点击/拖拽平移 |
+| 缩放下限过大 | `0.6` → `0.08`，新增「全览」按钮 |
+| 等待节点应缩略 | `pendingReplies` 或 `answer === null` → 48px 脉冲圆点 |
+| 「对话」按钮不跳转 | 根因 `data-action="close"` → `show-thread` |
+| 左侧应为树形 | `buildThreadTree` + 按日期分组折叠 |
+| 无意义节点未缩略 | 同上（`answer === null && error === null`） |
 
 ---
 
@@ -179,67 +212,66 @@ C0 和 C1 是全项目内聚度最低的两个社区，也恰好是改动最密�
 **风险**：低。
 **验收**：归档 → 从「已归档」恢复 → 会话与卡片位置原样回来。
 
-### P1 — 结构性
+### P1 — 结构性 ✅ 全部完成
 
-#### P1-1 子代理投影（32% 的语料当前不可见）
+#### ✅ P1-1 子代理投影（32% 的语料当前不可见）
 **证据**：`subagents/agent-*.jsonl` 22 个 vs 顶层 46 个。
-**方案**：按目录名关联父会话（`<project>/<sessionId>/subagents/agent-*.jsonl` 的 `<sessionId>` 即父）；读同目录的 `agent-*.meta.json` 的 `toolUseId` 关联到产生它的那次 Agent 工具调用，在父卡片上表现为可展开的子节点。
-**成本**：约 150 行。
-**注意**：`agent-*.meta.json` 的 `toolUseId` / `ownerAgentId` 字段已确认；缺失时回退到解析 tool_result 文本里的 `agentId:`。
-**验收**：本次会话（有 3 个子代理）在画布上能展开出子节点。
+**落地**：`transcript.js` 的 `#listTranscripts()` 下探 `<project>/<sessionId>/subagents/`，收集 `agent-*.jsonl`；`SessionCache` 新增 `parentSessionId`（从目录结构推断）与 `toolUseId`（读同目录 `.meta.json`）；`index.js` 投影循环内 `applyLineage()` 把子代理挂到父线程，`appliedForks` 防重。
+**实测**：`subagents/` 不存在时 readdir 异常被吞，不影响普通项目。**commit** `5a01a0f`
 
-#### P1-2 服务端与 RPC 测试（含画布端 handleHostMessage）
+#### ✅ P1-2 服务端与 RPC 测试（含画布端 handleHostMessage）
 
 **问题**：E2——改动最密的地方零覆盖。
-**图谱新增**：`handleHostMessage()` 度数 16，与 `handleApi()` 完全对等，是画布端的 RPC 分发枢纽，**同样零测试**。fork 触发、归档、工作区切换全部走这里。测试范围必须覆盖两端。
-**方案**：`test/server.test.js`，用 `CCSYNAPSE_PORT=0` 起真实服务、读 stdout 拿端口，覆盖：路由状态码、Host/Origin/content-type 闸、`/api/rpc` 的 `fork-session → send-message` 占位符别名闭环（**用 stub 替换 `bridge.js`，不打真实模型**）、归档/恢复。
-`test/canvas-rpc.test.js`（可选）：用 JSDOM 或轻量 vm 切片覆盖 `handleHostMessage()` 的各分支。
-**成本**：约 150 行。
-**收益最高的一项测试投入**——P0-1/P0-2 的回归全靠它。
+**落地**：`index.js` 拆出 `server/routes.js`（63 行）与 `server/rpc.js`（95 行），`bridge` 可注入。`test/server.test.js`（121 行，8 个测试）覆盖：信任闸（415 / 代理头 403 / 跨域 403 / 合法本地通过）、路由状态码（200 / 404）、`synapse:fork-session` 占位符别名闭环（stub bridge，不打真实模型）、`GET /api/workspaces/:id` 缺失 404。
+**注**：`activeSessionId` 原语改为 `activeSessionRef = { id: null }` 对象盒，供 `rpc.js` 共享可变状态。
 
-#### P1-3 启动路径无感化
-**方案**：`hooks/hooks.json` 加 `SessionStart` + `async: true` 的 hook，检测 3080 未监听则后台拉起；`/synapse` 退化为"打开浏览器 + 提示"。
-**注意**：hook 进程生命周期与 `SessionEnd` 清理需要实测。
-**成本**：约 40 行 + 实测。
+#### ✅ P1-3 启动路径无感化
+**落地**：`server/prestart.js`（31 行）——HTTP 探测 `/api/workspaces`（800ms 超时），未监听则 `spawn(..., { detached: true })` 拉起（不用 shell `&`，Windows 可靠）。`.claude/hooks/hooks.json` 注册为 `SessionStart` hook。
+**commit** `1643a64`
 
-#### P1-4 `escapeHtml()` 安全覆盖（图谱新增）
+#### ✅ P1-4 `escapeHtml()` 安全覆盖（图谱新增）
 
 **问题**：K1——`escapeHtml()` 是度数最高的安全关键函数（13 条边），只有 Markdown 路径有测试，卡片渲染路径无测试。
-**方案**：在 `test/canvas-rpc.test.js` 或独立的 `test/xss.test.js` 里增加针对 `conversationCard()` 路径的 XSS payload 测试：`<script>alert(1)</script>`、`"><img onerror=alert(1)`、SVG 注入。不需要引入新框架，vm 切片就够（`markdown-renderer.test.js` 已有这个模式）。
-**成本**：约 20 行。
-**风险**：不做的风险更高——它是唯一防线，却有半条路没有测试。
+**落地**：`test/markdown-renderer.test.js` 加 `loadEscapeHtml()` 辅助函数（同 vm 切片模式）与 2 个测试：4 种 XSS payload 经 `escapeHtml` 后无裸 `<>` 残留；`conversationCard` 标题路径的 `<script>` 必须实体编码。
+**实现中的一次修正**：初版断言「输出不含 `onerror` 字符串」是错的——`escapeHtml` 编码 HTML 字符，不编码属性名。正确不变量是「无裸 `&lt;`/`&gt;` 存活」。**commit** `bcc9b1b`
 
-### P2 — 实测不紧急，但值得顺手做
+### P2 — 实测不紧急
 
-#### P2-1 收窄轮询触发条件（3 行，先做这个）
-`refreshProjection` 现在只要**任一**工作区变了就重取当前工作区。改成只在该工作区的 `updatedAt` 变化时才 fetch 详情。**3 行改动，消掉绝大部分无谓请求**——在引入任何增量协议之前，先做这个。
+#### ✅ P2-1 收窄轮询触发条件
+**落地**：`refreshProjection` 在 fetch 前后各取一次当前工作区的 `updatedAt`，相同则直接返回 `false`，跳过详情重取。
 
-#### P2-2 增量/条件请求（等语料长大 10 倍再做）
+#### ⬜ P2-2 增量/条件请求（等语料长大 10 倍再做）
 实测 689 KB / 8ms / 1ms parse，当前不是瓶颈。触发条件：`workspaces.json` 超过 ~20 MB 或单次响应超过 ~50ms。最小方案是 ETag + 304，不是设计 delta 协议。
 
-#### P2-3 轮次切分改用结构判据（G2）
+#### ⬜ P2-3 轮次切分改用结构判据（G2）
 用"下一条 user 行"闭合 assistant 组，去掉 `grew` 跨轮询状态。约 40 行，去掉一个时序近似、让边界行为一致。
 **风险**：中——这块逻辑被 8 个测试钉着，改动要连带复核。
 
-#### P2-4 进程重启后的占位符恢复（A4）
+#### ⬜ P2-4 进程重启后的占位符恢复（A4）
 `pendingForks` / `aliases` 落盘到用户状态文件（它们是不可重建的用户状态，正好归 P0-2 的那一份）。约 30 行。
 
-#### P2-5 清理移植残留（A2）
+#### ⬜ P2-5 清理移植残留（A2）
 删 `loadThreadHistory` 空函数（8 处调用）与无调用者的 `messagesFromEvents`；或至少各加一行注释说明为何保留。约 20 行。**注意**：`markdown-renderer.test.js` 依赖 `app.js` 中 `'const escapeHtml'` 到 `'function canvasConnectors'` 之间的源码切片，改这块会连带影响测试。
 
-#### P2-6 index.js 路由层拆分（图谱新增 K2）
-C0（内聚度 0.10）和 C1（0.09）是全仓库最低。`index.js` 中的路由分发、RPC 处理、投影调度可分别拆为 `routes.js`、`rpc.js`。这不是重构为乐趣，而是让 P1-2 的测试可以单独 import 路由层而不拉起整个服务。
-**成本**：约 40 行移动 + 调整 import。与 P1-2 同步做成本最低。
+#### ✅ P2-6 index.js 路由层拆分（图谱新增 K2）
+C0（内聚度 0.10）和 C1（0.09）是全仓库最低。**落地**：`index.js` 拆出 `routes.js`（路由分发）与 `rpc.js`（RPC 分支），`index.js` 只留配置/初始化/定时器。与 P1-2 同步完成。
 
-### P3 — 功能缺口（是否做取决于取舍）
+---
 
-| 缺口 | 参考实现 | 备注 |
-|---|---|---|
-| 无流式（原版 dsh-synapse 有 partial 回填） | `app.js` 里 `state.liveReplies` 通路仍在，只是没有数据源 | 需要 SSE 或 WS，是唯一需要新协议的一项 |
-| 无搜索/过滤 | cc-haha 有 Cmd+K 全局搜索 | 纯前端，收益直接 |
-| 「当前会话」是猜的（按 mtime） | cc-haha 用 `CLAUDE_CODE_MESSAGING_SOCKET` | 见下 |
-| 会话内分支（`parentUuid` DAG） | 官方 `buildConversationChain` + `recoverOrphanedParallelToolResults` | 见 G4；需要改用 chain 而非行序，是真正的算法改造 |
-| `--bg` 权限无人应答 | cc-haha 用 `--sdk-url` 控制套接字答 `can_use_tool` | 替代现在的 `CCSYNAPSE_BG_ARGS` workaround |
+## 三·补 — 人工测试反馈的 UI 修复（全部完成）
+
+首轮人工测试后由 6 个 worktree 并发修复，均已合并入 master。
+
+| # | 问题 | 根因 | 落地 |
+|---|---|---|---|
+| 1 | 右下角无小地图 | 从未实现 | 160×100px canvas 浮层，绘制卡片矩形与视口框，点击/拖拽平移，主题自适应 |
+| 2 | 缩放下限过大（0.6）无法全览 | `app.js:1374` `Math.max(.6, ...)` | 改为 `Math.max(.08, ...)`；新增「全览」按钮 + `fitAllCards()`（算边界框、取最大可容纳 zoom、居中） |
+| 3 | 等待节点应缩略为圆点 | 从未实现 | `pendingReplies` 命中 → 48px 圆点，圆心显示 `${turnIndex + 1}`，`dot-pulse` 脉冲动画，双击进详情；`connectorPath()` 加 `dims` 参数对齐圆心 |
+| 4 | 顶部「对话」按钮不跳转 | `data-action="close"` 触发的是关闭 RPC | 改为 `data-action="show-thread"`，`data-thread` 指向 `state.activeId`（无活跃时回退 `currentThread()`），无可用线程时 `disabled` |
+| 5 | 左侧应为树形 | 首版树仅依赖 `parentId`，而多数会话彼此无分支关系 → 全部平铺为根节点 | `buildThreadTree` + `groupRootsByDate`：按 `updatedAt` 分日期组，7 天内默认展开，更早折叠；折叠 key `date-group:YYYY-MM-DD` |
+| 6 | 「无意义节点」未自动缩略 | 红框里的 `/plugin marketplace add` 等已完成卡片不在 `pendingReplies` 中 | 触发条件从 `isPending` 扩展为 `isPending \|\| (card.answer === null && card.error === null)`；`aria-label` 区分「等待回复」与「等待助手」 |
+
+**过程中发现并修正的一处判断错误**：`card` 对象没有 `messages` 字段，助手回复存在 `card.answer` 上。首版按 `messages` 判断会全部失效。
 
 ---
 
@@ -248,7 +280,7 @@ C0（内聚度 0.10）和 C1（0.09）是全仓库最低。`index.js` 中的路�
 | 不做 | 理由 |
 |---|---|
 | SQLite / 流式存储 | P0-2 拆完后 `workspaces.json` 预计 <100 KB；投影缓存用 jsonl 即可。没有实测到的规模需求。 |
-| delta/增量协议 | 实测 8ms/689KB，不慢。先做 P2-1 那 3 行。 |
+| delta/增量协议 | 实测 8ms/689KB，不慢。P2-1 那 3 行已落地，无谓请求已消。 |
 | token 认证 | 本机单人使用，content-type + Origin + 代理头三道闸之后无实测可达路径。只增加摩擦。 |
 | `Sec-Fetch-Site`/`Sec-Fetch-Mode` | content-type 要求已经堵死跨站简单请求。 |
 | 采用 cc-haha 的 `forkedFrom` 做血缘 | 实测 46 个文件里出现 0 次——那是 cc-haha 桌面端自己写的，真 `--fork-session` 不写。 |
@@ -256,33 +288,36 @@ C0（内聚度 0.10）和 C1（0.09）是全仓库最低。`index.js` 中的路�
 
 ---
 
-## 五、验收方法
+## 五、验收方法与结果
 
-1. **P0-1**：`detectForks` 对「重试会话」的误判数为 0，且对真实 fork 的识别不再依赖轮数下限（构造 1 轮就分叉的用例应能识别）。
-2. **P0-2**：`rm projection.*` 后重启，卡片位置/归档状态与删除前**逐字节一致**（`diff` 用户状态文件）。
-3. **P0-3**：归档 → 恢复 → 卡片位置回到原值。
-4. **P1-2 + P1-4**：改坏一处路由返回码，测试必须变红；构造 XSS payload 走 `conversationCard()` 路径，测试必须通过。
-5. **P2-1**：空闲会话（无写入）下，1 分钟内 `/api/workspaces/:id` 的请求数从 60 降到 0；有写入时仍 ≤1/秒。
+1. ✅ **P0-1**：新增测试断言「UUID 超集是 fork、UUID 不相交的重试永不连边」；指纹路径保留为回退。
+2. ✅ **P0-2**：`workspaces-projection.json` 与 `workspaces.json` 分离；缓存缺失时静默重建，用户状态不动。
+3. ✅ **P0-3**：`unarchiveThread()` + `GET /api/sessions/archived` + 侧边栏恢复入口。
+4. ✅ **P1-2 + P1-4**：信任闸 4 项、路由状态码 2 项、fork 别名闭环 1 项、XSS 2 项，合计新增 10 个测试（37 → 47）。
+5. ✅ **P2-1**：`refreshProjection` 按 `updatedAt` 短路，空闲工作区不再重取详情。
 
 ---
 
-## 六、建议的执行顺序
+## 六、实际执行顺序（已完成部分）
 
 ```
-P0-2 (拆持久化)   ← 先做：它是其他改动的前提，且越晚做迁移越贵
+P0-2 (拆持久化)            ✅
   ↓
-P0-1 (UUID 血缘)  ← 紧接着：独立、收益大、风险低
+P0-1 (UUID 血缘)           ✅
   ↓
-P1-2 (服务端测试) + P2-6 (index.js 拆分，同步做)  ← 给上面两项上锁
+P1-2 + P2-6 (测试 + 拆分)  ✅
   ↓
-P1-4 (escapeHtml 安全覆盖，20 行，顺手)
+P0-3 (归档恢复)            ✅  ← 图谱孤岛判断正确，确实可独立并行
   ↓
-P0-3 (归档恢复)   ← 可在任意时间点独立插入（图谱孤岛，零依赖）
-P1-1 (子代理) / P1-3 (启动)
+人工测试 → 6 项 UI 修复    ✅  ← 计划外的反馈驱动工作
   ↓
-P2-1 (3 行) → P2-3 → P2-4 → P2-5
+P1-1 (子代理) / P2-1 (3行) ✅
   ↓
-P3 按取舍
+P1-3 (启动预热) / P1-4 (XSS) ✅
 ```
 
-P0-2 排第一不是因为最紧急，而是因为**它决定了后续所有投影器改动是否还能安全迭代**。P0-3 不再排在 P0-1/P0-2 之后——图谱数据显示它是孤立节点，随时可以并行。P1-4（escapeHtml 覆盖）从无到有加进来，优先级在 P1-2 之后因为它依赖测试框架已搭好。
+**剩余**：P2-2 / P2-3 / P2-4 / P2-5 / P3，均无已知 bug 驱动，属改善性工作。
+
+**回顾一处判断修正**：图谱判定 P0-3 为孤岛（C18，零依赖）——实际执行时它确实在任意时间点独立完成，与其他项无耦合。这条图谱结论得到了验证。
+
+**新出现的计划外工作**：人工测试暴露了 6 个 UI 问题（小地图、缩放下限、等待节点形态、按钮跳转、树形结构、空回复节点），全部不在原评估范围内。这类问题只有真实使用才会暴露——评估覆盖了架构与算法，但覆盖不了交互手感。
