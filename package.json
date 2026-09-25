@@ -1,0 +1,16 @@
+{
+  "name": "ccsynapse",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code 的可视化会话地图：把会话、追问和分支投影成一张可拖拽、可缩放的画布",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "build": "node --check server/index.js && node --check server/transcript.js && node --check server/bridge.js && node --check server/workspace-store.js && node --check web/app.js",
+    "test": "node --test test/*.test.js"
+  },
+  "license": "MIT"
+}

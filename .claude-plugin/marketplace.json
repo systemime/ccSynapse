@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ccsynapse",
+  "description": "把 Claude Code 会话变成一张可浏览、可拖拽、可分支的地图。",
+  "owner": {
+    "name": "ccSynapse"
+  },
+  "plugins": [
+    {
+      "name": "ccsynapse",
+      "description": "会话地图：投影 ~/.claude 下的会话记录到画布，并可从画布发起分支。",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

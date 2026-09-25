@@ -1,0 +1,10 @@
+{
+  "name": "ccsynapse",
+  "version": "0.1.0",
+  "description": "Claude Code 的可视化会话地图：把同一工作目录下的会话、追问和分支投影成一张可拖拽的画布，并可从画布上直接发起分支。",
+  "license": "MIT",
+  "author": {
+    "name": "ccSynapse"
+  },
+  "keywords": ["session-map", "canvas", "history", "visualization"]
+}
