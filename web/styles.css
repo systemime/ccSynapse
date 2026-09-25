@@ -449,3 +449,5 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] button.primary { border-color: #3478f6; background: #3478f6; color: #fff; }
 [data-theme="dark"] button.primary:hover { border-color: #2563eb; background: #2563eb; color: #fff; }
 @media (max-width: 760px) { [data-theme="dark"] .card-inspector { border-top-color: #2a2d33; border-left: 0; } }
+.minimap { position: fixed; z-index: 90; right: 16px; bottom: 16px; width: 160px; height: 100px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px; background: rgba(248,249,250,.92); backdrop-filter: blur(4px); cursor: crosshair; box-shadow: 0 2px 8px rgba(0,0,0,.1); touch-action: none; }
+[data-theme="dark"] .minimap { background: rgba(21,23,27,.92); border-color: rgba(255,255,255,.1); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
