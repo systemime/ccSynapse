@@ -13,7 +13,7 @@
 // `getSessionMessages()` returns the *post-compaction* chain, which would erase
 // exactly the per-turn history the canvas exists to show.
 
-import { readdir, stat, open } from 'node:fs/promises'
+import { readdir, readFile, stat, open } from 'node:fs/promises'
 import { join, basename } from 'node:path'
 
 // seq is the 0-based line index: monotonic within a file, which is what the
@@ -226,6 +226,8 @@ class SessionCache {
     this.turnParts = []
     this.uuidSet = new Set()
     this.primed = false
+    this.parentSessionId = null
+    this.toolUseId = null
   }
 }
 
@@ -263,6 +265,17 @@ export class TranscriptSource {
       catch { continue }
       for (const entry of entries) {
         if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(join(this.root, project.name, entry.name))
+        if (!entry.isDirectory()) continue
+        // Scan subagent transcripts: <project>/<sessionId>/subagents/agent-*.jsonl
+        const sessionId = entry.name
+        let subEntries
+        try { subEntries = await readdir(join(this.root, project.name, sessionId, 'subagents'), { withFileTypes: true }) }
+        catch { continue }
+        for (const sub of subEntries) {
+          if (sub.isFile() && sub.name.startsWith('agent-') && sub.name.endsWith('.jsonl')) {
+            files.push(join(this.root, project.name, sessionId, 'subagents', sub.name))
+          }
+        }
       }
     }
     return files
@@ -399,6 +412,15 @@ export class TranscriptSource {
       let cache = this.caches.get(path)
       if (cache === undefined) {
         cache = new SessionCache(path, basename(path, '.jsonl'))
+        // Detect subagent files: <root>/<project>/<parentSessionId>/subagents/agent-*.jsonl
+        const dir = join(path, '..')
+        if (basename(dir) === 'subagents') {
+          cache.parentSessionId = basename(join(dir, '..'))
+          try {
+            const meta = JSON.parse(await readFile(join(dir, cache.sessionId + '.meta.json'), 'utf8'))
+            cache.toolUseId = meta.toolUseId ?? null
+          } catch { /* meta absent, toolUseId stays null */ }
+        }
         this.caches.set(path, cache)
       } else if (info.size === cache.size && cache.open === null && cache.offset >= cache.size) {
         continue                              // nothing new, nothing held open, nothing left unread
@@ -421,6 +443,8 @@ export class TranscriptSource {
         id: cache.sessionId, cwd: cache.cwd, title: cache.title, mtimeMs: info.mtimeMs,
         fingerprint: cache.fingerprint, turnSeqs: cache.turnSeqs, lastSeq: cache.lineCount,
         uuidSet: cache.uuidSet,
+        parentSessionId: cache.parentSessionId ?? null,
+        toolUseId: cache.toolUseId ?? null,
       })
 
       try {

@@ -88,6 +88,17 @@ async function project() {
       appliedForks.set(local, parent)
       await applyLineage(local, sessions.get(childId), parent, link.seedLength)
     }
+
+    // Subagent projection: sessions discovered under <parentSessionId>/subagents/
+    // are hung off their parent via the same lineage mechanism as forks.
+    for (const [sessionId, session] of sessions) {
+      if (session.parentSessionId === null) continue
+      const local = toLocal(sessionId)
+      const parent = toLocal(session.parentSessionId)
+      if (appliedForks.get(local) === parent) continue
+      appliedForks.set(local, parent)
+      await applyLineage(local, session, parent, 0)
+    }
   } catch (error) {
     console.warn(`[ccSynapse] projection cycle failed: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
