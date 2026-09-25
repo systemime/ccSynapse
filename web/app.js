@@ -46,6 +46,7 @@ const savedCollapsedCards = (() => {
 })()
 const CARD_WIDTH = 310
 const CARD_HEIGHT = 276
+const DOT_SIZE = 48
 const CARD_GAP_Y = 42
 const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
@@ -557,11 +558,11 @@ function firstAvailableCardPosition(position, occupied) {
   }
 }
 
-function connectorPath(fromPosition, toPosition) {
-  const fromX = fromPosition.x + CARD_WIDTH
-  const fromY = fromPosition.y + CARD_HEIGHT / 2
+function connectorPath(fromPosition, toPosition, { fromW = CARD_WIDTH, fromH = CARD_HEIGHT, toH = CARD_HEIGHT } = {}) {
+  const fromX = fromPosition.x + fromW
+  const fromY = fromPosition.y + fromH / 2
   const toX = toPosition.x
-  const toY = toPosition.y + CARD_HEIGHT / 2
+  const toY = toPosition.y + toH / 2
   const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
   return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
 }
@@ -722,6 +723,7 @@ function conversationCards(threads) {
         id,
         positionKey,
         dshThreadId: thread.id,
+        dshSessionId: thread.dshSessionId,
         sourceParentId: thread.parentId,
         parentId: null,
         sourceSeq: question.sourceSeq,
@@ -748,6 +750,7 @@ function conversationCards(threads) {
       id,
       positionKey,
       dshThreadId: thread.id,
+      dshSessionId: thread.dshSessionId,
       sourceParentId: thread.parentId,
       parentId: null,
       sourceSeq: undefined,
@@ -898,7 +901,10 @@ function canvasConnectors(cards) {
     const parent = card.parentId === null ? null : index.get(card.parentId)
     if (parent === undefined || parent === null) return ''
     const active = card.dshThreadId === state.activeId && parent.dshThreadId === state.activeId ? ' active-connector' : ''
-    return `<path class="${active.trim()}" data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position)}"></path>`
+    const fromDot = state.pendingReplies.has(parent.dshSessionId)
+    const toDot = state.pendingReplies.has(card.dshSessionId)
+    const dims = { fromW: fromDot ? DOT_SIZE : CARD_WIDTH, fromH: fromDot ? DOT_SIZE : CARD_HEIGHT, toH: toDot ? DOT_SIZE : CARD_HEIGHT }
+    return `<path class="${active.trim()}" data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position, dims)}"></path>`
   })
   const placement = draftPlacement(cards)
   if (placement !== null) {
@@ -908,6 +914,10 @@ function canvasConnectors(cards) {
 }
 
 function conversationCard(card, graph) {
+  if (card.dshSessionId !== null && state.pendingReplies.has(card.dshSessionId)) {
+    const selected = card.id === state.selectedCardId ? ' selected' : ''
+    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="等待回复（第 ${card.turnIndex + 1} 轮）"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
+  }
   const selected = card.id === state.selectedCardId ? 'selected' : ''
   const source = card.parentId === null ? 'Claude Code 会话' : card.turnIndex === 0 ? 'Claude Code 分支' : '追问'
   const continueButton = card.canContinue === true
@@ -1550,6 +1560,18 @@ app.addEventListener('pointerdown', event => {
 })
 app.addEventListener('pointerup', queueSelectionFollowup)
 app.addEventListener('scroll', hideSelectionFollowup, true)
+
+app.addEventListener('dblclick', event => {
+  const dot = event.target instanceof Element ? event.target.closest('.card--pending-dot[data-thread]') : null
+  if (!(dot instanceof HTMLElement)) return
+  const thread = state.workspace?.threads.find(item => item.id === dot.dataset.thread)
+  if (thread === undefined) return
+  state.activeId = thread.id
+  state.mode = 'thread'
+  state.detailTargetCardId = dot.dataset.cardId ?? null
+  render()
+  void loadThreadHistory(thread)
+})
 document.addEventListener('selectionchange', queueSelectionFollowup)
 document.addEventListener('keydown', event => {
   if (event.key !== 'Escape' || state.mode !== 'canvas' || state.inspectorCardId === null) return
