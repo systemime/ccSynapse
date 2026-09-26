@@ -167,18 +167,6 @@ function settleRpc(requestId, value, error) {
 
 function setError(error = '') { state.error = error instanceof Error ? error.message : error; render() }
 
-function messagesFromEvents(events) {
-  if (!Array.isArray(events)) return []
-  return events.flatMap(event => {
-    const content = event?.data?.message?.content ?? event?.data?.content
-    const text = Array.isArray(content) ? content.filter(block => block?.type === 'text').map(block => block.text).filter(Boolean).join('\n') : ''
-    if (event?.type === 'user/message' && text && !text.startsWith('Current runtime context. This snapshot supersedes earlier runtime-context snapshots.')) return [{ kind: 'user', text, at: event.time, sourceSeq: event.seq }]
-    if (event?.type === 'assistant/message' && text) return [{ kind: 'assistant', text, at: event.time, sourceSeq: event.seq }]
-    return []
-  })
-}
-
-async function loadThreadHistory() {}
 
 function canReplaceView() {
   return state.draft === null && !state.dragging && !state.canvasGesture && Date.now() >= state.canvasRefreshAfter && !document.activeElement?.matches('textarea')
@@ -227,8 +215,6 @@ async function openDshWorkspace(id, { renderAfter = true, preserveCanvasCamera =
   const currentThread = currentDshThread(state.workspace.threads)
   state.activeId = currentThread?.id ?? (state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null)
   if (currentThread !== undefined) revealConversationThread(conversationCards(state.workspace.threads), currentThread.id)
-  if (renderAfter && canReplaceView()) render()
-  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
   if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
   return true
 }
@@ -261,8 +247,6 @@ async function openWorkspace(id, { renderAfter = true } = {}) {
   if (state.workspace?.id !== body.workspace.id) resetCanvasCamera()
   state.workspace = body.workspace
   state.activeId = state.workspace.threads.some(thread => thread.id === state.activeId) ? state.activeId : state.workspace.threads[0]?.id ?? null
-  if (renderAfter && canReplaceView()) render()
-  await Promise.all(state.workspace.threads.map(thread => loadThreadHistory(thread, false)))
   if (renderAfter && load === state.workspaceLoad && canReplaceView()) render()
 }
 
@@ -375,7 +359,6 @@ async function sendMessage(thread, text) {
   render()
   try {
     await dshRpc('synapse:send-message', { sessionId: thread.dshSessionId, text })
-    void loadThreadHistory(thread)
   } catch (error) {
     state.pendingReplies.delete(thread.dshSessionId)
     render()
@@ -418,7 +401,6 @@ async function submitDraft() {
     state.pendingReplies.set(result.thread.dshSessionId, { text, at: Date.now() })
     render()
     await dshRpc('synapse:send-message', { sessionId: result.thread.dshSessionId, text })
-    void loadThreadHistory(result.thread)
     await refreshProjection()
   } catch (error) {
     if (draft.kind === 'branch') {
@@ -1820,7 +1802,6 @@ app.addEventListener('dblclick', event => {
   state.mode = 'thread'
   state.detailTargetCardId = dot.dataset.cardId ?? null
   render()
-  void loadThreadHistory(thread)
 })
 document.addEventListener('selectionchange', queueSelectionFollowup)
 document.addEventListener('keydown', event => {
@@ -1855,7 +1836,6 @@ app.addEventListener('click', async event => {
     openCardInspector(cardId)
     state.error = ''
     render()
-    void loadThreadHistory(thread)
     // Bidirectional current-session sync: switch DSH's current session
     // without closing the map; the client confirms via synapse:current-session.
     if (thread.dshSessionId !== null) {
@@ -1919,12 +1899,11 @@ app.addEventListener('click', async event => {
       state.error = ''
       if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
       render()
-      void loadThreadHistory(thread)
       // Bidirectional current-session sync: switch DSH's current session
       // without closing the map; the client confirms via synapse:current-session.
       if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })
     }
-    if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; state.detailTargetCardId = button.dataset.card ?? null; render(); void loadThreadHistory(thread) }
+    if (button.dataset.action === 'show-thread' && thread !== undefined) { state.activeId = thread.id; state.mode = 'thread'; state.detailTargetCardId = button.dataset.card ?? null; render() }
     if (button.dataset.action === 'show-canvas') { state.mode = 'canvas'; render() }
     if (button.dataset.action === 'toggle-card-children' && button.dataset.card !== undefined) {
       const cardId = button.dataset.card
