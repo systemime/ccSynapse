@@ -69,7 +69,7 @@ const state = {
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards), quickPhrases: savedQuickPhrases, quickPhraseEditorOpen: false,
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 }, mapCardSessionSwitches: new Set(),
   expandedMessageIds: new Set(),
-  canvasCards: undefined, canvasCardsById: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false,
+  canvasCards: undefined, canvasCardsById: undefined, canvasAllCards: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false,
   detailScrollByThread: new Map(), detailThreadId: null, detailTargetCardId: null,
   inspectorCardId: null, inspectorOpening: false, inspectorScrollByCard: new Map(),
   collapsedTreeNodes: new Set(),
@@ -731,9 +731,10 @@ function conversationCards(threads) {
         processCount,
       })
     }
-    const liveReply = state.liveReplies.get(thread.dshSessionId)
-    const latestTurn = turns.at(-1)
-    if (liveReply?.running && latestTurn !== undefined && (latestTurn.answer === null || latestTurn.answer.pending === true)) latestTurn.answer = { kind: 'assistant', text: liveReply.text, pending: true, at: new Date().toISOString() }
+    // The one entry point for partial text: both this render and the streaming
+    // patch go through applyLiveAnswer, so the dot decision, the card body and
+    // the connector size can never read two different answers.
+    applyLiveAnswer(turns.at(-1), state.liveReplies.get(thread.dshSessionId))
     if (turns.length === 0) {
       const id = `${thread.id}:turn:empty`
       const positionKey = `${thread.id}:turn-index:0`
@@ -1116,6 +1117,10 @@ function renderCanvas() {
   const cards = graph.cards
   state.canvasCards = cards
   state.canvasCardsById = new Map(cards.map(card => [card.id, card]))
+  // Every card, before the collapse filter. The streaming patch resolves the
+  // card a live answer belongs to in TURN order, and a folded latest turn is
+  // still that card even though it is not drawn.
+  state.canvasAllCards = allCards
   state.canvasGraph = graph
   if (state.inspectorCardId !== null && !state.canvasCardsById.has(state.inspectorCardId)) {
     state.inspectorCardId = null
@@ -2220,7 +2225,11 @@ function handleHostMessage(data) {
         else if (canReplaceView()) scheduleLiveRender()
       } else {
         state.liveReplies.delete(data.sessionId)
-        if (canReplaceView() || state.pendingReplies.has(data.sessionId)) renderPreservingDetailScroll()
+        // A poll can end several sessions at once (the first tick after a
+        // restart reports every session that was mid-reply as ended, and the
+        // turn now lives in the store). One full render per session froze the
+        // main thread for seconds; the throttled path folds them into one.
+        scheduleLiveRefresh()
       }
     }
   }
@@ -2233,43 +2242,103 @@ refreshSummaries().catch(setError)
 let polling = false
 let liveRenderTimer = 0
 let liveCardFrame = 0
-let liveCardSessionId = null
+let liveCardSessionIds = new Set()
 function scheduleLiveCardUpdate(sessionId) {
-  // Coalesce streaming chunks to one DOM patch per animation frame.
-  liveCardSessionId = sessionId
+  // Coalesce streaming chunks to one patch per animation frame for EVERY
+  // session that streamed in it. A single slot made the last session win the
+  // frame: with two replies at once, the first one never streamed at all.
+  liveCardSessionIds.add(sessionId)
   if (liveCardFrame !== 0) return
   liveCardFrame = window.requestAnimationFrame(() => {
     liveCardFrame = 0
-    if (liveCardSessionId === null) return
-    const id = liveCardSessionId
-    liveCardSessionId = null
-    applyLiveReplyToCard(id)
+    const sessionIds = liveCardSessionIds
+    liveCardSessionIds = new Set()
+    applyLiveReplies(sessionIds)
   })
 }
-function applyLiveReplyToCard(sessionId) {
+// The partial text of a reply in progress IS the answer of the thread's newest
+// turn, so it enters the card model here and the shape follows from it. The
+// renderer and the streaming patch both call this: a patch that wrote its own
+// text unconditionally was a second renderer, and the two disagreed by a frame
+// (`latestTurn.answer.pending` vs. no question asked), flipping the card
+// between two texts. Returns whether the model changed.
+function applyLiveAnswer(card, live) {
+  if (card === undefined || live?.running !== true) return false
+  if (card.answer !== null && card.answer.pending !== true) return false
+  if (card.answer !== null && card.answer.text === live.text) return false
+  card.answer = { kind: 'assistant', text: live.text, pending: true, at: new Date().toISOString() }
+  return true
+}
+// The card a session's streaming answer lands on: its newest turn, located in
+// the model in TURN order. DOM order is not turn order — the viewport
+// virtualizer unmounts and re-appends cards, and a collapsed ancestor removes
+// the latest card entirely — so `cards[cards.length - 1]` could hand the
+// partial text to a card that finished answering minutes ago.
+function liveAnswerCard(sessionId) {
+  return state.canvasAllCards?.filter(card => card.dshSessionId === sessionId).at(-1)
+}
+function applyLiveReplies(sessionIds) {
   if (state.mode !== 'canvas') return
   // Never patch cards mid-gesture: the reflow would compete with the drag or
   // pan frame; the next live-reply chunk re-applies after the gesture ends.
   if (state.dragging || state.canvasGesture) return
-  const thread = state.workspace?.threads.find(item => item.dshSessionId === sessionId)
-  if (thread === undefined) return
-  const live = state.liveReplies.get(sessionId)
-  if (live?.running !== true) return
-  const cards = app.querySelectorAll(`.thread-card[data-thread="${CSS.escape(thread.id)}"]`)
-  const card = cards[cards.length - 1]
-  if (!(card instanceof HTMLElement)) return
-  const answer = card.querySelector('.thread-answer')
-  if (!(answer instanceof HTMLElement)) return
-  const text = live.text
-  answer.innerHTML = text.trim() === ''
-    ? '<p class="thread-answer-pending">正在回复</p>'
-    : `${renderMarkdown(text)}<p class="thread-answer-pending">正在回复</p>`
+  let repainted = false
+  for (const sessionId of sessionIds) {
+    const card = liveAnswerCard(sessionId)
+    if (!applyLiveAnswer(card, state.liveReplies.get(sessionId))) continue
+    // Off the viewport, or folded away with its ancestors: nothing on screen to
+    // repaint, and the model already holds the text, so mounting it later shows
+    // the partial reply rather than an empty dot.
+    const element = app.querySelector(`.thread-card[data-card-id="${CSS.escape(card.id)}"]`)
+    if (!(element instanceof HTMLElement)) continue
+    repaintLiveCard(element, card)
+    repainted = true
+  }
+  if (repainted) renderMinimap()
+}
+// Repaint ONE card from the model — the same conversationCard a full render
+// uses, so a dot turns into a card the moment there is text to show. The
+// answer is that card's scroll container: replacing the card without putting
+// scrollTop back snapped every reader to the top once per chunk.
+function repaintLiveCard(element, card) {
+  const answer = element.querySelector('.thread-answer')
+  const scrollTop = answer instanceof HTMLElement ? answer.scrollTop : 0
+  const next = document.createElement('div')
+  next.innerHTML = conversationCard(card, state.canvasGraph)
+  const replacement = next.firstElementChild
+  if (!(replacement instanceof HTMLElement)) return
+  element.replaceWith(replacement)
+  bindCardDragging(replacement)
+  const nextAnswer = replacement.querySelector('.thread-answer')
+  if (nextAnswer instanceof HTMLElement) nextAnswer.scrollTop = scrollTop
+  // A dot that just became a card is a different size, and the connector that
+  // anchors to it was drawn for the dot. Minimap redraw happens per batch.
+  refreshCardConnectors(card.id)
 }
 function scheduleLiveRender() {
   if (liveRenderTimer !== 0 || !canReplaceView()) return
   liveRenderTimer = window.setTimeout(() => {
     liveRenderTimer = 0
     if (canReplaceView()) renderPreservingDetailScroll()
+  }, 120)
+}
+let liveRefreshTimer = 0
+// A reply that just finished is in the store, but its assistant event carries
+// the timestamp of the group's FIRST line (AssistantGroup.time), so the
+// workspace's updatedAt does not move and refreshProjection's summary diff
+// skips the re-fetch: the card that was streaming would snap back to its stale
+// dot instead of the finished answer. Re-fetch on the stream's own end signal,
+// once per tick however many sessions ended in it.
+function scheduleLiveRefresh() {
+  if (liveRefreshTimer !== 0 || !canReplaceView()) return
+  liveRefreshTimer = window.setTimeout(() => {
+    liveRefreshTimer = 0
+    if (!canReplaceView()) return
+    const reload = state.selectedDshWorkspaceId !== null
+      ? openDshWorkspace(state.selectedDshWorkspaceId)
+      : state.workspace === null ? null : openWorkspace(state.workspace.id)
+    if (reload === null) renderPreservingDetailScroll()
+    else void reload.catch(setError)
   }, 120)
 }
 // Sessions the server reported as still generating on the previous tick, so a
