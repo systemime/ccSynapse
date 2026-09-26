@@ -920,7 +920,7 @@ function conversationCard(card, graph) {
   if (isPending || hasNoAssistantReply) {
     const selected = card.id === state.selectedCardId ? ' selected' : ''
     const label = isPending ? `等待回复（第 ${card.turnIndex + 1} 轮）` : `等待助手（第 ${card.turnIndex + 1} 轮）`
-    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
+    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-drag-card="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
   }
   const selected = card.id === state.selectedCardId ? 'selected' : ''
   const source = card.parentId === null ? 'Claude Code 会话' : card.turnIndex === 0 ? 'Claude Code 分支' : '追问'
@@ -1070,8 +1070,7 @@ function syncCanvasViewport() {
     const element = wrapper.firstElementChild
     if (element instanceof HTMLElement) {
       layer.appendChild(element)
-      const handle = element.querySelector('[data-drag-card]')
-      if (handle instanceof HTMLElement) bindDragHandle(handle)
+      bindCardDragging(element)
     }
     state.mountedCardIds.add(card.id)
   }
@@ -1391,8 +1390,15 @@ function applyCanvasTransform() {
 
 function bindDragHandle(handle) {
   handle.addEventListener('pointerdown', event => {
-    const cardId = event.currentTarget.dataset.dragCard
-    const card = event.currentTarget.closest('.thread-card')
+    // A whole-card drag starts from the card body, head and meta strip only:
+    // buttons (title, fold, branch, footer), links and the answer body keep
+    // their own gestures — the answer especially, since selecting text there
+    // is what opens the follow-up popover. `handle` is itself a button when
+    // it is the node handle, so compare the blocker against the bound element.
+    const blocker = event.target instanceof Element ? event.target.closest('button, a, .thread-answer') : null
+    if (blocker !== null && blocker !== handle) return
+    const cardId = handle.dataset.dragCard ?? handle.dataset.cardId
+    const card = handle.closest('.thread-card')
     if (cardId === undefined || !(card instanceof HTMLElement)) return
     event.preventDefault()
     const origin = { x: event.clientX, y: event.clientY, position: { x: Number.parseFloat(card.style.left), y: Number.parseFloat(card.style.top) } }
@@ -1417,6 +1423,7 @@ function bindDragHandle(handle) {
     }
     const move = moveEvent => {
       position = { x: origin.position.x + (moveEvent.clientX - origin.x) / state.zoom, y: origin.position.y + (moveEvent.clientY - origin.y) / state.zoom }
+      card.classList.add('dragging')
       if (frame === 0) frame = window.requestAnimationFrame(apply)
     }
     const stop = () => {
@@ -1426,6 +1433,7 @@ function bindDragHandle(handle) {
       document.removeEventListener('pointerup', stop)
       document.removeEventListener('pointercancel', stop)
       if (frame !== 0) { window.cancelAnimationFrame(frame); frame = 0 }
+      card.classList.remove('dragging')
       apply()
       rememberCardPosition(cardId, position, aliases)
       state.dragging = false
@@ -1439,8 +1447,20 @@ function bindDragHandle(handle) {
   })
 }
 
+// Bind both drag entries of one card: the whole card (easy to hit) and its
+// node handle (where one exists — a dot card is its own handle). Both call
+// sites that mount cards route through here so a card mounted later by the
+// viewport virtualizer is as draggable as one in the initial render.
+function bindCardDragging(card) {
+  if (card.dataset.dragBound !== undefined) return
+  card.dataset.dragBound = 'true'
+  for (const element of new Set([card, card.querySelector('[data-drag-card]')])) {
+    if (element instanceof HTMLElement) bindDragHandle(element)
+  }
+}
+
 function installDragging() {
-  for (const handle of document.querySelectorAll('[data-drag-card]')) bindDragHandle(handle)
+  for (const card of document.querySelectorAll('.thread-card[data-card-id]:not(.draft-card)')) bindCardDragging(card)
 }
 
 function canvasViewport(target) {
