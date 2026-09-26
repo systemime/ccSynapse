@@ -489,7 +489,19 @@ export class TranscriptSource {
     }
     for (const session of this.sessions.values()) {
       if (session.toolUseId === null || session.toolUseId === undefined) continue
-      const realParent = issuer.get(session.toolUseId)
+      // A fork copies its parent's assistant lines verbatim, so the very same
+      // tool_use id is issued in every copy of the conversation and `issuer`
+      // hands back whichever copy happened to be read first. The folder a
+      // subagent was written under is the session that spawned it, and it wins
+      // whenever it issued the call too — otherwise a fork copy that sorts
+      // first adopts an agent it never spawned, and the anchor lands on the
+      // copy's line. The folder loses only when it did NOT issue the call,
+      // which is exactly the nested-agent case: those are all written flat into
+      // one subagents/ directory and only the toolUseId names the real spawner.
+      const owner = session.parentSessionId
+      const realParent = this.sessions.get(owner)?.issuedToolCalls?.has(session.toolUseId) === true
+        ? owner
+        : issuer.get(session.toolUseId)
       // Only accept a parent that exists this run; otherwise keep the directory
       // guess so an agent whose spawner is gone still lands somewhere sensible.
       if (realParent === undefined || realParent === session.id) continue

@@ -283,6 +283,45 @@ test('a subagent is anchored at the parent line that spawned it, not the parent 
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('a fork copy does not adopt the subagents of the session it copied', async () => {
+  // A fork duplicates its parent's assistant lines, so the tool_use that spawned
+  // a subagent exists in both files under the same id and the issuer index hands
+  // back whichever file was read first. Resolving to the copy is wrong twice
+  // over: the agent hangs off a session it was never spawned in, and its anchor
+  // is counted in that file's line space. The copy sorts first on purpose, which
+  // is the order that made a real corpus resolve three agents to a fork.
+  const root = await mkdtemp(join(tmpdir(), 'ccsynapse-forkcopy-'))
+  const main = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const copy = '00000000-9999-8888-7777-666666666666'
+  const project = join(root, 'F--Project-Demo')
+  const subagents = join(project, main, 'subagents')
+  await mkdir(subagents, { recursive: true })
+  const write = (path, lines) => writeFile(path, Array.isArray(lines) ? lines.map(line => `${JSON.stringify(line)}\n`).join('') : lines, 'utf8')
+
+  const history = [
+    userLine('第一问'),                                                  // line 0
+    assistantLine('m1', 0, { type: 'text', text: '第一答' }),            // line 1
+    userLine('第二问'),                                                  // line 2
+    assistantLine('m2', 0, { type: 'tool_use', id: 'call_spawn', name: 'Agent', input: { prompt: 'go' } }),   // line 3
+    userLine('第三问'),                                                  // line 4
+  ]
+  await write(join(project, `${main}.jsonl`), history)
+  // One line longer, so a wrong pick is visible in the anchor too (line 4 vs 3).
+  await write(join(project, `${copy}.jsonl`), [{ type: 'summary', summary: '副本', sessionId: copy }, ...history])
+  await write(join(subagents, 'agent-zzz.jsonl'), [userLine('子代理的提问')])
+  await write(join(subagents, 'agent-zzz.meta.json'), JSON.stringify({ toolUseId: 'call_spawn', spawnDepth: 1 }))
+
+  try {
+    const source = new TranscriptSource(root)
+    await source.sync(stubStore(), 'T')
+    assert.equal(source.sessions.get(copy).issuedToolCalls.has('call_spawn'), true,
+      'the fixture is only meaningful if the copy really does issue the same call')
+    const child = source.sessions.get('agent-zzz')
+    assert.equal(child.parentSessionId, main, 'the folder the agent was written under spawned it')
+    assert.equal(child.parentSeedLength, 4, 'and the anchor is the spawning line in THAT file, not in the copy')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('a subagent whose spawner is not in this run keeps the directory parent', async () => {
   // toolUseId names a call nobody in the corpus issued (project deleted, spawner
   // gone): falling back to the directory beats leaving the agent orphaned.
