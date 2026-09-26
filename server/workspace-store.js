@@ -198,6 +198,26 @@ export class WorkspaceStore {
     return [...this.state.hiddenSessionIds]
   }
 
+  /** ccSynapse: real session id -> canvas placeholder id, for canvas-started forks. */
+  async listAliases() {
+    await this.ready
+    return { ...(this.state.sessionAliases ?? {}) }
+  }
+
+  /**
+   * ccSynapse: an alias is user state, not a rebuildable projection — the
+   * placeholder is the only id the canvas card has, and the real id is only
+   * known once `claude --bg` answers. Losing it on restart leaves the card
+   * empty next to a second thread for the real id.
+   */
+  async setAlias(realId, localId) {
+    return this.mutate(() => {
+      this.state.sessionAliases ??= {}
+      this.state.sessionAliases[realId] = localId
+      return { realId, localId }
+    })
+  }
+
   /**
    * ccSynapse: drop lineage for sessions the current detection did not confirm.
    *
@@ -297,7 +317,7 @@ export class WorkspaceStore {
       if (migrated) await this.save()
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`synapse: cannot read ${this.dataFile}: ${error.message}`)
-      this.state = { version: 4, hiddenSessionIds: [], workspaces: [] }
+      this.state = { version: 4, hiddenSessionIds: [], sessionAliases: {}, workspaces: [] }
       await this.save()
     }
   }
@@ -625,6 +645,9 @@ function normalizeState(value) {
   let state
   if ((value?.version === 2 || value?.version === 3 || value?.version === 4) && Array.isArray(value.workspaces)) {
     const hiddenSessionIds = Array.isArray(value.hiddenSessionIds) ? value.hiddenSessionIds.filter(item => typeof item === 'string') : []
+    // Files written before the alias landed have no such field. Default it in
+    // memory without forcing a rewrite (same as a missing cache file).
+    const sessionAliases = value.sessionAliases !== null && typeof value.sessionAliases === 'object' && !Array.isArray(value.sessionAliases) ? value.sessionAliases : {}
     migrated = value.version < 3 || !Array.isArray(value.hiddenSessionIds)
     const workspaces = value.workspaces.map(workspace => ({
       ...workspace,
@@ -640,12 +663,13 @@ function normalizeState(value) {
         return { ...rest, messages: notes, pendingProcess: [] }
       }) : [],
     }))
-    state = { ...value, version: value.version, hiddenSessionIds, workspaces }
+    state = { ...value, version: value.version, hiddenSessionIds, sessionAliases, workspaces }
   } else if (value?.version === 1 && Array.isArray(value.workspaces)) {
     const now = typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString()
     state = {
       version: 3,
       hiddenSessionIds: [],
+      sessionAliases: {},
       workspaces: value.workspaces.map((workspace, index) => {
         const events = Array.isArray(workspace.events) ? workspace.events : []
         const workspaceNow = typeof workspace.updatedAt === 'string' ? workspace.updatedAt : now

@@ -64,6 +64,16 @@ let projecting = false
 const toLocal = id => (typeof id === 'string' ? aliases.get(id) ?? id : id)
 const toReal = id => (typeof id === 'string' ? locals.get(id) ?? id : id)
 
+// An alias is user state, not a rebuildable projection: only this map links the
+// canvas card (which holds the placeholder) to the real session. Forget it on
+// restart and the next projection draws a second thread for the real id beside
+// the empty placeholder. Awaited before the server listens, so the first
+// projection cycle already sees it.
+for (const [realId, localId] of Object.entries(await store.listAliases())) {
+  aliases.set(realId, localId)
+  locals.set(localId, realId)
+}
+
 async function project() {
   if (projecting) return
   projecting = true
@@ -157,7 +167,17 @@ function sendFile(response, status, contentType, body) {
 
 const TRUSTED = trustSet(config.trustedHosts)
 
-const { handleRpc } = createRpcHandler({ source, aliases, locals, pendingForks, activeSessionRef, config })
+const { handleRpc } = createRpcHandler({
+  source, aliases, locals, pendingForks, activeSessionRef, config,
+  // Write through at the moment the alias is minted, rather than reconciling
+  // memory against disk on every projection cycle: the two can then never
+  // diverge, and there is no window where a restart drops a fresh alias.
+  onAlias: (realId, localId) => {
+    store.setAlias(realId, localId).catch(error => {
+      console.warn(`[ccSynapse] cannot persist session alias: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  },
+})
 const { handleApi } = createRouter({ store, source, handleRpc, toLocal })
 
 const STATIC = new Map([
