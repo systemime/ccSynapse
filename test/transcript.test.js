@@ -33,6 +33,9 @@ async function fixture(lines) {
 const userLine = (text) => ({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { role: 'user', content: text } })
 const assistantLine = (id, index, block) => ({ type: 'assistant', uuid: `a${index}`, timestamp: '2026-01-01T00:00:01.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { id, role: 'assistant', content: [block] } })
 const toolResultLine = (toolUseId, text) => ({ type: 'user', uuid: `r${toolUseId}`, timestamp: '2026-01-01T00:00:02.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] }, toolUseResult: {} })
+// Claude Code moves the payload of a large tool result into attachment lines
+// that sit in the middle of the response's own write sequence.
+const attachmentLine = (index) => ({ type: 'attachment', uuid: `att${index}`, timestamp: '2026-01-01T00:00:02.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', attachment: { type: 'tool-result-payload', content: 'x'.repeat(4096) } })
 
 test('metadata lines lead the file, so cwd must be found later', async () => {
   const { root, cleanup } = await fixture([
@@ -208,6 +211,96 @@ test('a tool result from another call still splits the group', async () => {
       .map(event => event.data.message.content[0].text)
     assert.deepEqual(texts, ['前段', '续写'], 'a foreign result still ends the group')
   } finally { await cleanup() }
+})
+
+test('text split by an attachment line stays one card', async () => {
+  // The shape measured on disk: the results of a message's own tool calls, then
+  // the attachments holding their payloads, then another block of the SAME
+  // message. Bridging only the results would leave this split — and the split is
+  // safe only by luck of block order (text first, tool_use after), which is
+  // exactly the luck this rule exists to stop depending on.
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_att', 0, { type: 'text', text: '前段' }),
+    assistantLine('msg_att', 1, { type: 'tool_use', id: 'toolu_y', name: 'Skill', input: { skill: 'y' } }),
+    toolResultLine('toolu_y', 'done'),
+    attachmentLine(2),
+    attachmentLine(3),
+    assistantLine('msg_att', 4, { type: 'text', text: '续写' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')   // trailing group is held one poll
+    const assistants = store.projected.filter(event => event.type === 'assistant/message')
+    assert.equal(assistants.length, 1, 'the attachments did not cut the message in two')
+    assert.equal(assistants[0].data.message.content[0].text, '前段\n续写', 'both halves on one card')
+    // Attachments carry no event of their own, and bridging them must not eat
+    // the call or its result either.
+    assert.equal(store.projected.filter(event => event.type === 'tool/call').length, 1)
+    assert.equal(store.projected.filter(event => event.type === 'tool/result').length, 1)
+    assert.equal(store.projected.filter(event => event.type === 'tool/result')[0].data.message.content[0].text, 'done')
+  } finally { await cleanup() }
+})
+
+test('a skill payload line does not split the group either', async () => {
+  // Shape 3 measured on disk: the body of the skill that was just invoked arrives
+  // as a `user` line carrying text blocks and no tool_result. It is not an answer
+  // and not a prompt (a prompt is a plain string), and it emits no event of its
+  // own — but it sits between two blocks of the SAME response, and closing on it
+  // is what still cuts this message apart in the real session file.
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_skill', 0, { type: 'text', text: '前段' }),
+    assistantLine('msg_skill', 1, { type: 'tool_use', id: 'toolu_s', name: 'Skill', input: { skill: 's' } }),
+    toolResultLine('toolu_s', 'Launching skill: s'),
+    { type: 'user', uuid: 'sk1', timestamp: '2026-01-01T00:00:02.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1',
+      message: { role: 'user', content: [{ type: 'text', text: `Base directory for this skill: ${'x'.repeat(43_431)}` }] } },
+    attachmentLine(2),
+    assistantLine('msg_skill', 3, { type: 'text', text: '续写' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')   // trailing group is held one poll
+    const assistants = store.projected.filter(event => event.type === 'assistant/message')
+    assert.equal(assistants.length, 1, 'the payload did not cut the message in two')
+    assert.equal(assistants[0].data.message.content[0].text, '前段\n续写')
+    assert.equal(assistants[0].data.turn, 1, 'still the turn the model started answering')
+    assert.equal(store.projected.some(event => event.type === 'user/message'), true, 'the opening prompt, and only it, is a user card')
+  } finally { await cleanup() }
+})
+
+test('a real prompt or a system line still splits the group', async () => {
+  // The other side of every widening above. Both are turn boundaries that must
+  // never be merged across: a prompt starts a new question, and a `system` line
+  // can be a compaction boundary whose pre-history the canvas cannot draw. If
+  // either ever stops closing a group, this rule has been widened into "nothing
+  // closes a group" and these fail.
+  const cutters = [
+    ['a prompt', userLine('第二个问题')],
+    ['a system line', { type: 'system', subtype: 'compact_boundary', uuid: 'sy1', timestamp: '2026-01-01T00:00:02.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', content: 'boundary' }],
+  ]
+  for (const [what, cutter] of cutters) {
+    const { root, cleanup } = await fixture([
+      userLine('问题'),
+      assistantLine('msg_sys', 0, { type: 'text', text: '前段' }),
+      cutter,
+      assistantLine('msg_sys', 3, { type: 'text', text: '续写' }),
+    ])
+    try {
+      const store = stubStore()
+      const source = new TranscriptSource(root)
+      await source.sync(store, 'T')
+      await source.sync(store, 'T')
+      const texts = store.projected
+        .filter(event => event.type === 'assistant/message')
+        .map(event => event.data.message.content[0].text)
+      assert.deepEqual(texts, ['前段', '续写'], `${what} must still end the group`)
+    } finally { await cleanup() }
+  }
 })
 
 test('appended lines project incrementally, keeping seq monotonic', async () => {

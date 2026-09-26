@@ -370,20 +370,47 @@ export class TranscriptSource {
         continue
       }
 
-      // A tool_result that answers a call made by the OPEN group does not end
-      // that group. One API message's blocks are written across lines and its
-      // own results land in between them (measured shape: thinking / text /
-      // tool_use, the results, then another tool_use of the SAME message id).
-      // Closing there starts a second group for that id, and a second
-      // assistant/message with it — the canvas chains a turn's assistant
-      // messages and shows only the last, so the first one's text would vanish.
-      // Only results for calls this group issued get the pass. A result that
-      // belongs to an earlier group still closes it, and so does every other
-      // line: a real next prompt, system, attachment, mode.
-      const ownResult = cache.open !== null && raw.type === 'user' && Array.isArray(raw.message?.content)
-        && raw.message.content.some(block => block?.type === 'tool_result'
-          && cache.open.toolCalls.some(call => call.data.callId === block.tool_use_id))
-      if (!ownResult) this.#flush(cache, events)
+      // An open group is NOT closed by the lines that belong to the same API
+      // response's write sequence. Closing there starts a second group for the
+      // same message id, and a second assistant/message with it — the canvas
+      // chains a turn's assistant messages and shows only the last, so the
+      // first one's text would vanish.
+      //
+      // Classifying every line measured between two assistant lines of one
+      // message id over the whole corpus, exactly three shapes occur, and all
+      // three are the response being written down rather than something after
+      // it (counts: 783 / 6 / 4):
+      //
+      //   1. A tool_result answering a call THIS group made (783 lines). Only a
+      //      result for one of this group's own callIds counts; a result
+      //      belonging to an earlier group still closes it, so the rule is not
+      //      "results never close a group".
+      //   2. An attachment (6 lines). Claude Code moves the payload of those
+      //      same results into attachment lines — the real shape is thinking /
+      //      text / tool_use, the result, the attachments, then another tool_use
+      //      of the SAME message id.
+      //   3. A `user` line whose array content has no tool_result at all (4
+      //      lines): the body of a skill that was just invoked, or similar
+      //      injected payload. It is not an answer and not a prompt — a prompt
+      //      is a plain string, which is what `userPrompt` above tests — and it
+      //      emits no event of its own, so it never advances the conversation.
+      //
+      // Everything else still closes the group: a new message id (above), a
+      // real user prompt, and every meta line — `system` above all, because a
+      // compaction boundary must never be merged across. Over the whole corpus
+      // no `system`, `mode`, `permission-mode`, `file-history-*` or `cost-state`
+      // line ever appears inside a write sequence, so none of them gets a pass:
+      // no evidence they need one.
+      const content = raw.message?.content
+      // null unless this line is a user answer; [] when it is a user line that
+      // answers nothing (shape 3).
+      const results = raw.type === 'user' && Array.isArray(content)
+        ? content.filter(block => block?.type === 'tool_result')
+        : null
+      const ownResult = cache.open !== null && results !== null && results.length > 0
+        && results.some(block => cache.open.toolCalls.some(call => call.data.callId === block.tool_use_id))
+      const midResponse = ownResult || raw.type === 'attachment' || (results !== null && results.length === 0)
+      if (!midResponse) this.#flush(cache, events)
       for (const event of translateLine(raw, seq, time)) {
         if (event.type === 'session/title') cache.title = event.data.title
         // Tool results need the same turn/step stamp as the calls they answer,
