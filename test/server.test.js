@@ -107,6 +107,34 @@ test('GET /api/workspaces → 200', async () => {
   assert.deepEqual(res.body.workspaces, [])
 })
 
+test('GET /api/live → 进行中的会话，key 是 toLocal 之后的 id', async () => {
+  const { handleApi } = createRouter({
+    store: stubStore(),
+    source: stubSource(),
+    handleRpc: async () => [],
+    // The canvas only ever knows the placeholder the alias maps to, so a key
+    // left in real-id space would match no card and show nothing.
+    toLocal: id => (id === 'real-1' ? 'placeholder-1' : id),
+    liveTexts: () => [['real-1', '半句'], ['real-2', '另一句']],
+  })
+  const res = await callApi(handleApi, mockReq('GET'), '/api/live')
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.body, { sessions: { 'placeholder-1': '半句', 'real-2': '另一句' } })
+})
+
+test('GET /api/live → 没有进行中的会话时返回空对象', async () => {
+  const { handleApi } = createRouter({
+    store: stubStore(),
+    source: stubSource(),
+    handleRpc: async () => [],
+    toLocal: id => id,
+    liveTexts: () => [],
+  })
+  const res = await callApi(handleApi, mockReq('GET'), '/api/live')
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.body, { sessions: {} })
+})
+
 test('不存在的 API 路由 → 404', async () => {
   const { handleApi } = createRouter({
     store: stubStore(),

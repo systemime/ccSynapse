@@ -16,6 +16,8 @@
 import { readdir, readFile, stat, open } from 'node:fs/promises'
 import { join, basename } from 'node:path'
 
+import { MAX_PROJECTION_LENGTH, PROJECTION_TRUNCATED_SUFFIX } from './workspace-store.js'
+
 // seq is the 0-based line index: monotonic within a file, which is what the
 // store's `sourceSeq` dedup needs to make replay idempotent.
 // Everything in Claude Code's own entry union that carries no turn. Listing them
@@ -81,6 +83,21 @@ const MAX_READ_BYTES = 16 * 1024 * 1024
 function clampTool(text) {
   if (typeof text !== 'string' || text.length <= MAX_TOOL_LENGTH) return text
   return `${text.slice(0, MAX_TOOL_LENGTH)}${TOOL_TRUNCATED_SUFFIX}`
+}
+
+/**
+ * Partial text of the group that is still being written, clamped exactly like a
+ * projected message (same cap, same suffix, same trim) so the client can patch
+ * it into the card the finished answer will replace without the two disagreeing.
+ * Null when there is nothing to show — no open group, or one carrying only
+ * thinking / tool_use blocks — because the client renders its own placeholder
+ * for that, and an empty string would only churn the DOM once a second.
+ */
+function liveText(parts) {
+  const text = parts.join('\n').trim()
+  if (text === '') return null
+  if (text.length <= MAX_PROJECTION_LENGTH) return text
+  return `${text.slice(0, MAX_PROJECTION_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}`
 }
 
 function textOf(content) {
@@ -481,7 +498,12 @@ export class TranscriptSource {
       const events = await this.#project(cache)
       if (cache.cwd === null) continue        // metadata-only file, no session yet
       if (events.length === 0) {
-        if (cache.primed) continue
+        // Nothing to project. A group still held open is the exception: its
+        // text is not an event yet but IS what /api/live serves, and it grows
+        // without emitting anything, so skipping here would freeze the canvas
+        // on the first partial line. `projectEvents` no-ops on an empty batch,
+        // so falling through costs nothing but the map update.
+        if (cache.primed && cache.open === null) continue
       }
 
       const session = {
@@ -500,6 +522,11 @@ export class TranscriptSource {
         toolUseId: cache.toolUseId ?? null,
         issuedToolCalls: cache.issuedToolCalls,
         issuedToolLines: cache.issuedToolLines,
+        // An open group means a message is stuck at EOF, i.e. still being
+        // written — the one moment the canvas has nothing else to show. Its
+        // text is NOT in the store yet (the group is held until it closes), so
+        // this is the only way the client can see a reply before it finishes.
+        liveText: cache.open === null ? null : liveText(cache.open.parts),
       })
 
       try {

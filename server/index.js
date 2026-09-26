@@ -64,6 +64,13 @@ let projecting = false
 const toLocal = id => (typeof id === 'string' ? aliases.get(id) ?? id : id)
 const toReal = id => (typeof id === 'string' ? locals.get(id) ?? id : id)
 
+// [realId, partialText] for every session still writing a reply. A getter of
+// its own rather than passing `source` to the router, so the route depends on
+// the one thing it needs and nothing else. `toLocal` is applied by the router.
+const liveTexts = () => [...source.sessions]
+  .filter(([, session]) => session.liveText !== null)
+  .map(([id, session]) => [id, session.liveText])
+
 // An alias is user state, not a rebuildable projection: only this map links the
 // canvas card (which holds the placeholder) to the real session. Forget it on
 // restart and the next projection draws a second thread for the real id beside
@@ -178,7 +185,7 @@ const { handleRpc } = createRpcHandler({
     })
   },
 })
-const { handleApi } = createRouter({ store, source, handleRpc, toLocal })
+const { handleApi } = createRouter({ store, source, handleRpc, toLocal, liveTexts })
 
 const STATIC = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],

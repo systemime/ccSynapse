@@ -360,6 +360,49 @@ test('a trailing assistant message is held one poll, then released', async () =>
   } finally { await cleanup() }
 })
 
+test('a held group exposes its partial text as live text, and release clears it', async () => {
+  // The held group is the whole point: its text is NOT in the store yet, so
+  // without this the canvas shows 「等待助手回复」 for the entire turn.
+  const { root, file, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_live', 0, { type: 'text', text: '前半句' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    const sessions = await source.sync(store, 'T')
+    assert.equal(store.projected.filter(event => event.type === 'assistant/message').length, 0, 'still held')
+    assert.equal(sessions.get('aaaaaaaa-1111-2222-3333-444444444444').liveText, '前半句')
+
+    // A real prompt closes the group. The text is a card from here on, and the
+    // live copy must go away or the client keeps patching it over the answer.
+    await appendFile(file, `${JSON.stringify(userLine('第二问'))}\n`, 'utf8')
+    const after = await source.sync(store, 'T')
+    assert.equal(after.get('aaaaaaaa-1111-2222-3333-444444444444').liveText, null)
+  } finally { await cleanup() }
+})
+
+test('live text is capped like a projected message, and shows nothing without text', async () => {
+  const { root, file, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_live', 0, { type: 'thinking', thinking: '先想一想' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    // Thinking alone is not text the user wrote or the model wrote down: an
+    // empty string would make the client churn its placeholder once a second.
+    assert.equal((await source.sync(store, 'T')).get('aaaaaaaa-1111-2222-3333-444444444444').liveText, null)
+
+    await appendFile(file, `${JSON.stringify(assistantLine('msg_live', 1, { type: 'text', text: 'x'.repeat(9_000) }))}\n`, 'utf8')
+    const capped = (await source.sync(store, 'T')).get('aaaaaaaa-1111-2222-3333-444444444444').liveText
+    // Same cap and same marker the store would project, so the client can patch
+    // this into the card the finished answer replaces without the two disagreeing.
+    assert.ok(capped.length < 8_100, `capped, got ${capped.length}`)
+    assert.match(capped, /详情查看全文）$/)
+  } finally { await cleanup() }
+})
+
 test('known metadata entry types are skipped quietly', async () => {
   const { root, cleanup } = await fixture([
     { type: 'agent-name', agentName: 'Explore', cwd: 'F:\\Project\\Demo', sessionId: 's1' },

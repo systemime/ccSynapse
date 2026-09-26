@@ -19,9 +19,17 @@ async function readJson(request) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new InputError('请求不是有效 JSON') }
 }
 
-export function createRouter({ store, source, handleRpc, toLocal }) {
+export function createRouter({ store, source, handleRpc, toLocal, liveTexts }) {
   async function handleApi(request, response, pathname) {
     if (pathname === '/api/agents') return sendJson(response, 200, { agents: await listAgents() })
+    // Partial text of every reply currently being written, so the canvas can
+    // show it before the turn ends. `liveTexts` yields [realId, text] pairs;
+    // the canvas only ever speaks the local id (see toLocal in index.js).
+    if (pathname === '/api/live') {
+      const sessions = {}
+      for (const [sessionId, text] of liveTexts()) sessions[toLocal(sessionId)] = text
+      return sendJson(response, 200, { sessions })
+    }
     if (pathname === '/api/reset' && request.method === 'POST') {
       return sendJson(response, 200, await store.clearLegacy([...source.sessions.values()].map(s => ({ id: toLocal(s.id) }))))
     }

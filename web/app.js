@@ -2255,11 +2255,30 @@ function scheduleLiveRender() {
     if (canReplaceView()) renderPreservingDetailScroll()
   }, 120)
 }
+// Sessions the server reported as still generating on the previous tick, so a
+// session that stops appearing can be told `running: false` — otherwise its card
+// keeps the「正在回复」placeholder forever.
+let liveSessions = new Set()
+async function pollLiveReplies() {
+  const { sessions } = await api('/api/live')
+  const next = new Set(Object.keys(sessions))
+  for (const [sessionId, text] of Object.entries(sessions)) {
+    handleHostMessage({ type: 'synapse:live-reply', sessionId, running: true, text })
+  }
+  for (const sessionId of liveSessions) {
+    if (!next.has(sessionId)) handleHostMessage({ type: 'synapse:live-reply', sessionId, running: false })
+  }
+  liveSessions = next
+}
 async function pollProjection() {
   if (polling || document.hidden || !canReplaceView()) return
   polling = true
   try {
-    await refreshProjection()
+    // Same 1 Hz tick as the projection: the reply text of a turn in progress is
+    // not in the store yet (transcript.js holds the group open until it closes),
+    // so it only ever arrives from here. A second, finer clock would buy nothing
+    // — the store's own projection only lands on this same beat.
+    await Promise.all([refreshProjection(), pollLiveReplies()])
   } finally { polling = false }
 }
 window.setInterval(() => { void pollProjection() }, 1_000)
