@@ -879,6 +879,39 @@ function revealConversationThread(cards, threadId) {
   if (changed) persistCollapsedCards()
 }
 
+// Search core: pure, so test/card-search.test.js can slice it into a vm the way
+// the renderer test does. One hit per card (first match wins), question matched
+// before answer, and hits keep the canvas card order — the same query always
+// lists the same way.
+const cardSearchText = value => String(value ?? '').replace(/\s+/g, ' ').trim()
+
+function cardSearchSnippet(text, index, length) {
+  const start = Math.max(0, index - 24)
+  const end = Math.min(text.length, index + length + 36)
+  return `${start === 0 ? '' : '…'}${text.slice(start, end)}${end === text.length ? '' : '…'}`
+}
+
+function cardSearchHits(cards, query) {
+  const needle = String(query ?? '').trim().toLowerCase()
+  if (needle === '') return []
+  const hits = []
+  for (const card of cards) {
+    const question = cardSearchText(card.question)
+    const answer = cardSearchText(card.answer?.text)
+    const inQuestion = question.toLowerCase().indexOf(needle)
+    const inAnswer = inQuestion === -1 ? answer.toLowerCase().indexOf(needle) : -1
+    if (inQuestion === -1 && inAnswer === -1) continue
+    const text = inQuestion === -1 ? answer : question
+    const at = inQuestion === -1 ? inAnswer : inQuestion
+    hits.push({ cardId: card.id, question, where: inQuestion === -1 ? '回答' : '提问', snippet: cardSearchSnippet(text, at, needle.length) })
+  }
+  return hits
+}
+
+function cardSearchHitHtml(hit, index, active) {
+  return `<div class="card-search-hit${active ? ' active' : ''}" role="option" aria-selected="${active}" data-hit-index="${index}"><strong>${escapeHtml(hit.question)}</strong><span><i>${escapeHtml(hit.where)}</i>${escapeHtml(hit.snippet)}</span></div>`
+}
+
 function canvasConnectors(cards) {
   const index = new Map(cards.map(card => [card.id, card]))
   const links = cards.map(card => {
@@ -1309,7 +1342,7 @@ function render() {
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const choices = workspaceChoices()
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
-  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点" aria-label="整理节点"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>整理</button><button data-action="focus-active" title="定位到当前会话" aria-label="定位到当前会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2.6M8 11.9v2.6M1.5 8h2.6M11.9 8h2.6"/></svg>定位</button><button data-action="fit-all" title="缩放到全览" aria-label="缩放到全览">全览</button><button data-action="zoom-out" aria-label="缩小" title="缩小"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 8h9"/></svg></button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大" title="放大"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button></div>` : ''
+  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点" aria-label="整理节点"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>整理</button><button data-action="focus-active" title="定位到当前会话" aria-label="定位到当前会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2.6M8 11.9v2.6M1.5 8h2.6M11.9 8h2.6"/></svg>定位</button><button data-action="fit-all" title="缩放到全览" aria-label="缩放到全览">全览</button><button data-action="zoom-out" aria-label="缩小" title="缩小"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 8h9"/></svg></button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大" title="放大"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><button data-action="search-cards" title="搜索卡片（Ctrl+K）" aria-label="搜索卡片"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>搜索</button></div>` : ''
   const detailAvailable = currentThread() !== null
   const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   const archivedSection = state.archivedSessionIds.length === 0 ? '' : `<div class="sidebar-heading"><span>已归档</span></div><nav class="thread-tree">${state.archivedSessionIds.map(id => `<div class="tree-row" role="button" tabindex="0" data-action="unarchive-session" data-session="${escapeHtml(id)}" title="恢复此会话"><span class="tree-dot"></span><span class="tree-label">${escapeHtml(id.slice(0, 8))}…</span><i>恢复</i></div>`).join('')}</nav>`
@@ -1646,26 +1679,32 @@ minimapEl.addEventListener('pointerdown', event => {
   minimapEl.addEventListener('pointerup', stop)
 })
 
-function focusActiveCard() {
+// Cards may be unmounted (outside the viewport), so the camera target always
+// comes from the data model, never from DOM queries.
+function centerCanvasOnCard(card) {
   const viewport = document.querySelector('.canvas-viewport')
   if (!(viewport instanceof HTMLElement)) return
+  const { x: left, y: top } = card.position
+  const size = cardSize(card)
+  const bounds = viewport.getBoundingClientRect()
+  state.canvasCamera = {
+    x: bounds.width / 2 - (left + size.w / 2) * state.zoom,
+    y: bounds.height / 2 - (top + size.h / 2) * state.zoom,
+  }
+  applyCanvasTransform()
+  syncCanvasViewport()
+}
+
+function focusActiveCard() {
   const cards = state.canvasCards
   if (cards === undefined || cards.length === 0) return
   // Drafts win over the active conversation's latest turn; fall back to the
-  // first card. Cards may be unmounted (outside the viewport), so the focus
-  // target comes from the data model, never from DOM queries.
+  // first card.
   const draft = state.draft === null ? undefined
     : state.draft.kind === 'new' ? { position: { x: 86, y: 82 } } : draftPlacement(cards)
   const activeCards = state.activeId === null || state.activeId === undefined ? [] : cards.filter(card => card.dshThreadId === state.activeId)
   const card = draft ?? activeCards.at(-1) ?? cards[0]
-  const { x: left, y: top } = card.position
-  const bounds = viewport.getBoundingClientRect()
-  state.canvasCamera = {
-    x: bounds.width / 2 - (left + CARD_WIDTH / 2) * state.zoom,
-    y: bounds.height / 2 - (top + CARD_HEIGHT / 2) * state.zoom,
-  }
-  applyCanvasTransform()
-  syncCanvasViewport()
+  centerCanvasOnCard(card)
 }
 
 let selectionFollowup = null
@@ -1803,6 +1842,117 @@ app.addEventListener('dblclick', event => {
   state.detailTargetCardId = dot.dataset.cardId ?? null
   render()
 })
+// ── Card search overlay ──────────────────────────────────────────────────────
+// Lives outside #app: render() replaces app.innerHTML, which would unmount the
+// overlay mid-typing. Result rows are plain divs, so the app's delegated click
+// handler and the tree-row Enter/Space handler below leave them alone.
+const searchEl = document.createElement('div')
+searchEl.className = 'card-search'
+searchEl.hidden = true
+searchEl.innerHTML = '<div class="card-search-panel" role="dialog" aria-modal="true" aria-label="搜索卡片"><div class="card-search-field"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input class="card-search-input" type="text" placeholder="搜索提问与回答" aria-label="搜索提问与回答" autocomplete="off"></div><p class="card-search-status" role="status"></p><div class="card-search-results" role="listbox" aria-label="搜索结果"></div></div>'
+document.body.appendChild(searchEl)
+const searchInput = searchEl.querySelector('.card-search-input')
+const searchStatus = searchEl.querySelector('.card-search-status')
+const searchList = searchEl.querySelector('.card-search-results')
+let searchHits = []
+let searchActive = 0
+let searchFrame = 0
+
+function paintCardSearch() {
+  const query = searchInput.value.trim()
+  searchStatus.textContent = query === '' ? '输入关键词，搜索当前工作区的提问与回答'
+    : searchHits.length === 0 ? '无结果'
+    : `${searchHits.length} 条结果 · ↑↓ 选择，Enter 跳转，Esc 关闭`
+  searchList.innerHTML = searchHits.map((hit, index) => cardSearchHitHtml(hit, index, index === searchActive)).join('')
+}
+
+function openCardSearch() {
+  searchEl.hidden = false
+  searchInput.value = ''
+  searchHits = []
+  searchActive = 0
+  paintCardSearch()
+  searchInput.focus()
+}
+
+function closeCardSearch() {
+  if (searchFrame !== 0) {
+    window.cancelAnimationFrame(searchFrame)
+    searchFrame = 0
+  }
+  searchEl.hidden = true
+  searchInput.value = ''
+  searchHits = []
+  searchList.innerHTML = ''
+  searchStatus.textContent = ''
+}
+
+// One frame per keystroke, not one rebuild per keystroke: search runs over every
+// card on each input, and the result list can hold hundreds of rows.
+function queueCardSearch() {
+  if (searchFrame !== 0) return
+  searchFrame = window.requestAnimationFrame(() => {
+    searchFrame = 0
+    searchHits = cardSearchHits(state.canvasCards ?? [], searchInput.value)
+    searchActive = 0
+    paintCardSearch()
+  })
+}
+
+function moveCardSearch(delta) {
+  if (searchHits.length === 0) return
+  searchActive = (searchActive + delta + searchHits.length) % searchHits.length
+  paintCardSearch()
+  searchList.querySelector('.card-search-hit.active')?.scrollIntoView({ block: 'nearest' })
+}
+
+function activateCardSearch(index = searchActive) {
+  const hit = searchHits[index]
+  const cards = state.canvasCards
+  if (hit === undefined || cards === undefined) return
+  const card = cards.find(item => item.id === hit.cardId)
+  if (card === undefined) return
+  // The card may sit behind a folded ancestor; unfold before rendering so the
+  // jump lands on a mounted node.
+  revealConversationThread(cards, card.dshThreadId)
+  state.selectedCardId = hit.cardId
+  state.mode = 'canvas'
+  closeCardSearch()
+  render()
+  const target = state.canvasCardsById?.get(hit.cardId)
+  if (target !== undefined) centerCanvasOnCard(target)
+}
+
+searchInput.addEventListener('input', queueCardSearch)
+searchList.addEventListener('click', event => {
+  const row = event.target instanceof Element ? event.target.closest('[data-hit-index]') : null
+  if (row instanceof HTMLElement) activateCardSearch(Number(row.dataset.hitIndex))
+})
+searchEl.addEventListener('mousedown', event => {
+  if (event.target !== searchEl) return
+  event.preventDefault()
+  closeCardSearch()
+})
+
+// Capture phase: the overlay owns these keys while it is open, and the existing
+// bubble-phase handlers (Escape closes the inspector, Enter activates tree rows)
+// never see them.
+document.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    searchEl.hidden ? openCardSearch() : closeCardSearch()
+    return
+  }
+  if (searchEl.hidden) return
+  if (event.key === 'Escape') closeCardSearch()
+  else if (event.key === 'ArrowDown') moveCardSearch(1)
+  else if (event.key === 'ArrowUp') moveCardSearch(-1)
+  else if (event.key === 'Enter') activateCardSearch()
+  else return
+  event.preventDefault()
+  event.stopPropagation()
+}, true)
+
 document.addEventListener('selectionchange', queueSelectionFollowup)
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && state.mode === 'canvas' && state.inspectorCardId !== null) {
@@ -1938,6 +2088,7 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'zoom-out') zoomCanvasAtCenter(-.1)
     if (button.dataset.action === 'fit-all') fitAllCards()
     if (button.dataset.action === 'focus-active') focusActiveCard()
+    if (button.dataset.action === 'search-cards') openCardSearch()
     if (button.dataset.action === 'dismiss-error') { state.error = ''; render() }
     if (button.dataset.action === 'layout' && state.workspace !== null) {
       resetCardPositions()
