@@ -104,8 +104,13 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .thread-card { position: absolute; display: grid; width: 310px; height: 276px; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 1px solid #d8e0e8; border-radius: 7px; background: #fff; box-shadow: 0 3px 11px rgba(33,48,67,.08); overflow: visible; }
 .thread-card:hover { border-color: #9ca3af; box-shadow: 0 8px 20px rgba(33,48,67,.13); }
 .thread-card.selected { box-shadow: 0 0 0 2px rgba(17,24,39,.16), 0 8px 20px rgba(33,48,67,.13); }
-.node-handle { position: absolute; top: -8px; left: 50%; display: grid; width: 28px; height: 15px; min-height: 15px; place-items: center; transform: translateX(-50%); border: 1px solid #d8e0e8; border-radius: 4px; background: #fff; cursor: grab; padding: 0; }
+.node-handle { position: absolute; top: -8px; left: 50%; display: grid; width: 36px; height: 16px; min-height: 16px; place-items: center; transform: translateX(-50%); border: 1px solid #d8e0e8; border-radius: 4px; background: #fff; cursor: grab; padding: 0; }
 .node-handle::after { content: '...'; display: block; margin: -5px 0 0 2px; color: #94a3b8; font-size: 11px; letter-spacing: 1.5px; line-height: 1; }
+/* The whole card drags (app.js skips buttons, links and the answer body), so
+   the head, the meta strip and the blank card space advertise it. */
+.thread-card-head, .thread-meta, .thread-card footer { cursor: grab; }
+.thread-card.dragging, .thread-card.dragging * { cursor: grabbing; }
+.thread-card.dragging { z-index: 3; box-shadow: 0 12px 26px rgba(33,48,67,.24); opacity: .92; }
 .thread-card-head { gap: 8px; min-width: 0; padding: 15px 12px 8px; }
 .thread-card-head .topic-dot { background: var(--thread-color); }
 .thread-title { min-width: 0; flex: 1; min-height: 22px; overflow: hidden; border: 0; background: transparent; padding: 0; color: #1f2937; font-size: 13px; font-weight: 720; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -326,6 +331,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] .thread-card:hover { border-color: #4a4f57; box-shadow: 0 8px 20px rgba(0,0,0,.45); }
 [data-theme="dark"] .thread-card.selected { box-shadow: 0 0 0 2px rgba(91,141,239,.4), 0 8px 20px rgba(0,0,0,.45); }
 [data-theme="dark"] .node-handle { border-color: #2a2d33; background: #1b1c1f; }
+[data-theme="dark"] .thread-card.dragging { box-shadow: 0 12px 26px rgba(0,0,0,.55); }
 [data-theme="dark"] .node-handle::after { color: #737a83; }
 [data-theme="dark"] .thread-title { color: #e6e8eb; }
 [data-theme="dark"] .thread-title:hover { color: #fff; }
