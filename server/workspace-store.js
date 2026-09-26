@@ -198,6 +198,41 @@ export class WorkspaceStore {
     return [...this.state.hiddenSessionIds]
   }
 
+  /**
+   * ccSynapse: drop lineage for sessions the current detection did not confirm.
+   *
+   * `sessionIds` is every session that legitimately has a parent this run, so
+   * anything holding a link but absent from that list is stale. Repair alone is
+   * not enough: `dshThread` only overwrites a link when the detector reports a
+   * *different* parent, and says nothing at all about a session that turned out
+   * to be a root, so a stale edge from an earlier run survives forever. Two
+   * threads pointing at each other is the visible symptom — with no root left,
+   * the canvas has no tree to lay out.
+   */
+  async clearLineage(sessionIds) {
+    await this.ready
+    const ids = new Set(sessionIds)
+    // Check before mutating: the projection loop runs every second, and
+    // `mutate` rewrites the state file on every call.
+    const stale = this.state.workspaces.some(workspace => workspace.threads.some(thread =>
+      ids.has(thread.dshSessionId) && (thread.parentId !== null || thread.sourceParentSessionId !== undefined)))
+    if (!stale) return { cleared: 0 }
+    return this.mutate(() => {
+      let cleared = 0
+      for (const workspace of this.state.workspaces) {
+        for (const thread of workspace.threads) {
+          if (!ids.has(thread.dshSessionId)) continue
+          if (thread.parentId === null && thread.sourceParentSessionId === undefined) continue
+          thread.parentId = null
+          delete thread.sourceParentSessionId
+          delete thread.sourceSeedLength
+          cleared += 1
+        }
+      }
+      return { cleared }
+    })
+  }
+
   async clearLegacy(sessions) {
     return this.mutate(() => {
       const hidden = new Set(this.state.hiddenSessionIds)

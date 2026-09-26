@@ -70,20 +70,27 @@ async function project() {
   try {
     const sessions = await source.sync(store, config.workspaceTitle, toLocal)
 
+    // Every session that legitimately has a parent this run. Anything holding a
+    // stored link but missing from this set is stale (see clearLineage below).
+    const withLineage = new Set()
+
     // Lineage, authoritative first: a fork ccSynapse itself started knows its
     // parent exactly, so resolve it now that the child id is known.
     for (const [placeholder, pending] of pendingForks) {
       const child = locals.get(placeholder)
       if (child === undefined || !sessions.has(child)) continue
+      withLineage.add(placeholder)
+      if (appliedForks.get(placeholder) === toLocal(pending.parentSessionId)) { pendingForks.delete(placeholder); continue }
       appliedForks.set(placeholder, toLocal(pending.parentSessionId))
       await applyLineage(placeholder, sessions.get(child), toLocal(pending.parentSessionId), pending.seedLength)
       pendingForks.delete(placeholder)
     }
 
-    // Then the heuristic path, for forks made in a terminal.
+    // Then the exact path, for forks made in a terminal (UUID intersection).
     for (const [childId, link] of detectForks(sessions)) {
       const local = toLocal(childId)
       const parent = toLocal(link.parentSessionId)
+      withLineage.add(local)
       if (appliedForks.get(local) === parent) continue
       appliedForks.set(local, parent)
       await applyLineage(local, sessions.get(childId), parent, link.seedLength)
@@ -94,11 +101,19 @@ async function project() {
     for (const [sessionId, session] of sessions) {
       if (session.parentSessionId === null) continue
       const local = toLocal(sessionId)
+      withLineage.add(local)
       const parent = toLocal(session.parentSessionId)
       if (appliedForks.get(local) === parent) continue
       appliedForks.set(local, parent)
       await applyLineage(local, session, parent, 0)
     }
+
+    // Detection is the single source of truth for lineage. Without this, a link
+    // written by an earlier run whose fork no longer shows up — a stale edge
+    // from before the direction fix, a deleted transcript — lives forever,
+    // because `dshThread` only rewrites a link the detector contradicts and
+    // never clears one it no longer reports.
+    await store.clearLineage([...sessions.keys()].map(toLocal).filter(id => !withLineage.has(id)))
   } catch (error) {
     console.warn(`[ccSynapse] projection cycle failed: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
