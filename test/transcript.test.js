@@ -221,6 +221,56 @@ test('unknown entry types are skipped, never thrown on', async () => {
   } finally { await cleanup() }
 })
 
+test('a nested subagent hangs off the agent that spawned it, not the top session', async () => {
+  // Real layout: every subagent of a session — nested ones included — is written
+  // FLAT into one subagents/ directory, so the path only ever names the top-level
+  // session. The meta file's toolUseId points at the Agent tool call that spawned
+  // it, and the transcript that issued that call is the real parent.
+  const root = await mkdtemp(join(tmpdir(), 'ccsynapse-nested-'))
+  const main = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const project = join(root, 'F--Project-Demo')
+  const subagents = join(project, main, 'subagents')
+  await mkdir(subagents, { recursive: true })
+  const write = (path, lines) => writeFile(path, Array.isArray(lines) ? lines.map(line => `${JSON.stringify(line)}\n`).join('') : lines, 'utf8')
+
+  await write(join(project, `${main}.jsonl`), [userLine('主会话的提问')])
+  await write(join(subagents, 'agent-aaa.jsonl'), [
+    userLine('一级代理的提问'),
+    // The spawn call: this is what makes agent-aaa the parent of agent-bbb.
+    assistantLine('msg_a', 0, { type: 'tool_use', id: 'call_2', name: 'Agent', input: { prompt: 'go' } }),
+  ])
+  await write(join(subagents, 'agent-bbb.jsonl'), [userLine('二级代理的提问')])
+  await write(join(subagents, 'agent-aaa.meta.json'), JSON.stringify({ toolUseId: 'call_1', spawnDepth: 1 }))
+  await write(join(subagents, 'agent-bbb.meta.json'), JSON.stringify({ toolUseId: 'call_2', spawnDepth: 2 }))
+
+  try {
+    const source = new TranscriptSource(root)
+    await source.sync(stubStore(), 'T')
+    assert.equal(source.sessions.get('agent-bbb').parentSessionId, 'agent-aaa',
+      'the spawner issues the tool call the child meta names')
+    assert.equal(source.sessions.get('agent-aaa').parentSessionId, main,
+      'a depth-1 agent still resolves to the session directory, which is right for it')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a subagent whose spawner is not in this run keeps the directory parent', async () => {
+  // toolUseId names a call nobody in the corpus issued (project deleted, spawner
+  // gone): falling back to the directory beats leaving the agent orphaned.
+  const root = await mkdtemp(join(tmpdir(), 'ccsynapse-orphan-'))
+  const main = 'bbbbbbbb-1111-2222-3333-444444444444'
+  const subagents = join(root, 'F--Project-Demo', main, 'subagents')
+  await mkdir(subagents, { recursive: true })
+  const write = (path, lines) => writeFile(path, Array.isArray(lines) ? lines.map(line => `${JSON.stringify(line)}\n`).join('') : lines, 'utf8')
+  await write(join(root, 'F--Project-Demo', `${main}.jsonl`), [userLine('提问')])
+  await write(join(subagents, 'agent-ccc.jsonl'), [userLine('提问')])
+  await write(join(subagents, 'agent-ccc.meta.json'), JSON.stringify({ toolUseId: 'call_gone', spawnDepth: 2 }))
+  try {
+    const source = new TranscriptSource(root)
+    await source.sync(stubStore(), 'T')
+    assert.equal(source.sessions.get('agent-ccc').parentSessionId, main)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('detectForks links a child whose leading prompts are a prefix of the parent', () => {
   const sessions = new Map([
     ['parent', { id: 'parent', fingerprint: ['a', 'b'], turnSeqs: [5, 20], lastSeq: 40 }],

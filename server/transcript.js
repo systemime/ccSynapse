@@ -229,6 +229,7 @@ class SessionCache {
     this.primed = false
     this.parentSessionId = null
     this.toolUseId = null
+    this.issuedToolCalls = new Set()   // tool_use ids this transcript ISSUED
   }
 }
 
@@ -356,8 +357,12 @@ export class TranscriptSource {
         cache.open.seq = seq
         cache.open.addText(textOf(raw.message?.content), time)
         for (const event of translateLine(raw, seq, time)) {
-          if (event.type === 'tool/call') cache.open.toolCalls.push(event)
-          else events.push(event)
+          if (event.type === 'tool/call') {
+            // Only a real tool_use block counts as "this session called it" —
+            // a mention of the id in text must never look like a spawn.
+            cache.issuedToolCalls.add(event.data.callId)
+            cache.open.toolCalls.push(event)
+          } else events.push(event)
         }
         continue
       }
@@ -451,6 +456,7 @@ export class TranscriptSource {
         uuidLine: cache.uuidLine,
         parentSessionId: cache.parentSessionId ?? null,
         toolUseId: cache.toolUseId ?? null,
+        issuedToolCalls: cache.issuedToolCalls,
       })
 
       try {
@@ -460,6 +466,39 @@ export class TranscriptSource {
       } catch (error) {
         console.warn(`[ccSynapse] projection failed for ${cache.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+
+    // Resolve subagent parents. The directory says which session a subagent was
+    // spawned *under*, but nested agents are all written flat into one
+    // subagents/ directory, so that only ever yields the top-level session. The
+    // meta file's toolUseId names the Agent tool call that spawned it, and the
+    // transcript that ISSUED that call is the real parent.
+    //
+    // Rebuilt every sync, not only when something changed: a child's file can be
+    // read before its spawner's tool_use has been, so the index is only complete
+    // once every transcript has been read — and it is a few hundred strings.
+    const issuer = new Map()
+    for (const session of this.sessions.values()) {
+      for (const id of session.issuedToolCalls ?? []) {
+        if (!issuer.has(id)) issuer.set(id, session.id)
+      }
+    }
+    for (const session of this.sessions.values()) {
+      if (session.toolUseId === null || session.toolUseId === undefined) continue
+      const realParent = issuer.get(session.toolUseId)
+      // Only accept a parent that exists this run; otherwise keep the directory
+      // guess so an agent whose spawner is gone still lands somewhere sensible.
+      if (realParent === undefined || realParent === session.id) continue
+      // Walking up from the candidate must never come back here: a cycle would
+      // make the lineage tree unrenderable, and one cheap walk prevents it.
+      const seen = new Set([session.id])
+      let up = realParent
+      while (up !== undefined && !seen.has(up)) {
+        seen.add(up)
+        up = this.sessions.get(up)?.parentSessionId ?? undefined
+      }
+      if (seen.has(up)) continue
+      session.parentSessionId = realParent
     }
     return this.sessions
   }
