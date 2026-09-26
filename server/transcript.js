@@ -230,6 +230,7 @@ class SessionCache {
     this.parentSessionId = null
     this.toolUseId = null
     this.issuedToolCalls = new Set()   // tool_use ids this transcript ISSUED
+    this.issuedToolLines = new Map()   // tool_use id -> seq (line index) that ISSUED it
   }
 }
 
@@ -361,6 +362,8 @@ export class TranscriptSource {
             // Only a real tool_use block counts as "this session called it" —
             // a mention of the id in text must never look like a spawn.
             cache.issuedToolCalls.add(event.data.callId)
+            // First occurrence only: a later repeat must not move the anchor.
+            if (!cache.issuedToolLines.has(event.data.callId)) cache.issuedToolLines.set(event.data.callId, seq)
             cache.open.toolCalls.push(event)
           } else events.push(event)
         }
@@ -457,6 +460,7 @@ export class TranscriptSource {
         parentSessionId: cache.parentSessionId ?? null,
         toolUseId: cache.toolUseId ?? null,
         issuedToolCalls: cache.issuedToolCalls,
+        issuedToolLines: cache.issuedToolLines,
       })
 
       try {
@@ -499,6 +503,12 @@ export class TranscriptSource {
       }
       if (seen.has(up)) continue
       session.parentSessionId = realParent
+      // Where in the parent the spawn happened: the canvas keeps parent cards
+      // with `sourceSeq < seedLength`, so +1 puts the spawning line itself
+      // inside the cut and anchors the agent at its own turn instead of at the
+      // parent's last one. Same +1 convention as detectForks below.
+      const spawnLine = this.sessions.get(realParent)?.issuedToolLines?.get(session.toolUseId)
+      if (Number.isSafeInteger(spawnLine)) session.parentSeedLength = spawnLine + 1
     }
     return this.sessions
   }

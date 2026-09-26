@@ -105,7 +105,10 @@ async function project() {
       const parent = toLocal(session.parentSessionId)
       if (appliedForks.get(local) === parent) continue
       appliedForks.set(local, parent)
-      await applyLineage(local, session, parent, 0)
+      // The spawning turn when the parent is known (transcript.js resolves it),
+      // else 0: a subagent with no resolved spawner anchors at its parent's end,
+      // which is the old behaviour.
+      await applyLineage(local, session, parent, session.parentSeedLength ?? 0)
     }
 
     // Detection is the single source of truth for lineage. Without this, a link

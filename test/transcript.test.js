@@ -253,6 +253,36 @@ test('a nested subagent hangs off the agent that spawned it, not the top session
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('a subagent is anchored at the parent line that spawned it, not the parent end', async () => {
+  // Every subagent of a real session landed on one card because index.js passed
+  // seedLength 0: the canvas keeps parent cards with `sourceSeq < seedLength`,
+  // so 0 selects nothing and every agent fell back to the same anchor.
+  const root = await mkdtemp(join(tmpdir(), 'ccsynapse-spawnline-'))
+  const main = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const project = join(root, 'F--Project-Demo')
+  const subagents = join(project, main, 'subagents')
+  await mkdir(subagents, { recursive: true })
+  const write = (path, lines) => writeFile(path, Array.isArray(lines) ? lines.map(line => `${JSON.stringify(line)}\n`).join('') : lines, 'utf8')
+
+  await write(join(project, `${main}.jsonl`), [
+    userLine('第一问'),                                                  // line 0
+    assistantLine('m1', 0, { type: 'text', text: '第一答' }),            // line 1
+    userLine('第二问'),                                                  // line 2
+    assistantLine('m2', 0, { type: 'tool_use', id: 'call_spawn', name: 'Agent', input: { prompt: 'go' } }),   // line 3
+    userLine('第三问'),                                                  // line 4
+  ])
+  await write(join(subagents, 'agent-zzz.jsonl'), [userLine('子代理的提问')])
+  await write(join(subagents, 'agent-zzz.meta.json'), JSON.stringify({ toolUseId: 'call_spawn', spawnDepth: 1 }))
+
+  try {
+    const source = new TranscriptSource(root)
+    await source.sync(stubStore(), 'T')
+    const child = source.sessions.get('agent-zzz')
+    assert.equal(child.parentSessionId, main)
+    assert.equal(child.parentSeedLength, 4, 'the spawning line (3) is inside the cut, so the agent anchors there')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('a subagent whose spawner is not in this run keeps the directory parent', async () => {
   // toolUseId names a call nobody in the corpus issued (project deleted, spawner
   // gone): falling back to the directory beats leaving the agent orphaned.
@@ -268,6 +298,9 @@ test('a subagent whose spawner is not in this run keeps the directory parent', a
     const source = new TranscriptSource(root)
     await source.sync(stubStore(), 'T')
     assert.equal(source.sessions.get('agent-ccc').parentSessionId, main)
+    // No resolved spawner means no known spawn line: leaving this undefined is
+    // what makes index.js fall back to seedLength 0, i.e. the old anchor.
+    assert.equal(source.sessions.get('agent-ccc').parentSeedLength, undefined)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
