@@ -1,8 +1,8 @@
 # ccSynapse 架构评估与改造方案
 
-日期：2026-09-27（第四版） · 评估对象：`F:\Project\MyTool\ccSynapse` (v0.1.0, **58 tests passing**)
+日期：2026-09-27（第五版） · 评估对象：`F:\Project\MyTool\ccSynapse` (v0.1.0, **71 tests passing**)
 图谱：299 节点 · 655 边 · 19 社区 · 0 导入环 — `graphify-out/graph.json`
-当前 HEAD：`594f225` · **全部 P0 / P1 / P2（除 P2-2）已完成**，P3 完成搜索一项
+当前 HEAD：`91a5789` · **全部 P0 / P1 / P2（除 P2-2）已完成**，P3 仅剩 `--bg` 权限应答
 
 ---
 
@@ -26,7 +26,9 @@
 | P2-4 占位符重启恢复 | ✅ | `sessionAliases` 落进用户状态文件 | `b4f6ae0` |
 | P2-5 清理移植残留 | ✅ | 删 `messagesFromEvents` + `loadThreadHistory` 及 8 处空转调用 | `3b9a813` |
 | P3 · 卡片搜索 | ✅ | Ctrl/Cmd+K，搜索提问 + 回答 | `d8c5130` |
-| P3 · 其余缺口 | ⬜ | 流式、会话内 DAG 分支、`--bg` 权限应答 | — |
+| P3 · 流式回填 | ✅ | `GET /api/live` + 已有的 `synapse:live-reply` 通路 | `b600144` |
+| P3 · 会话内 DAG 分支 | ✅ | `parentSeq` → 按父行解析父卡片 | `91a5789` |
+| P3 · `--bg` 权限应答 | ⬜ | 需要 `--sdk-url` 控制套接字 | — |
 
 ### 第一轮人工测试驱动的 6 项 UI 修复
 
@@ -136,6 +138,75 @@
 | 「键盘完全无响应」 | 用 `input.focus()` + 合成事件的组合，但页面没有真实焦点时 focus 不生效；改用 `agent-browser-cli send-keys` 的真实按键后 Ctrl+K、Escape 均正常 |
 
 **教训**：验证一个交互时，先确认「我读到的是不是这个状态的权威来源」。DOM 存在 ≠ 可见；节点引用 ≠ 当前节点；合成分发 ≠ 真实输入。三次里有两次若直接上报，就会变成假缺陷——和 P0 阶段那个「UUID 会被重映射」的文档误读是同一类错误。
+
+**第六轮又犯了第四次同类错误**（见下），所以这条不是一次性的疏漏，是需要制度化的检查项。
+
+---
+
+## 第六轮：P3 的两项
+
+### 流式回填（`b600144`）
+
+**客户端早已就绪，服务端从没发过消息**：`app.js:2193` 处理 `synapse:live-reply`，`:724` 把它叠加到最新一轮的 answer（条件是 `answer === null || pending`），`applyLiveReplyToCard` 就地打补丁避免重绘。缺的只是数据源。
+
+做法：`sync()` 的 session 记录暴露 `liveText`（当前卡在 EOF、尚未 drain 的组的累积文本，按 store 的 `MAX_PROJECTION_LENGTH` 截断）→ `GET /api/live`（key 经 `toLocal`）→ 客户端挂在已有的 1Hz `pollProjection` 上，用模块级 `liveSessions` 集合判断 `running:false`。
+
+**顺手修掉一个会毁掉本功能的既有 bug**：`sync()` 里
+
+```js
+if (events.length === 0) { if (cache.primed) continue }
+```
+
+被持有的组再收到新文本行时**不产出任何事件**，于是被早退跳过，`sessions` 记录（连带 `liveText`）永远停在第 1 段。改成 `cache.primed && cache.open === null` 才跳过。代价为零——`projectEvents([])` 在 `workspace-store.js:293` 直接 `return null`，不触发 `mutate`、不写盘。
+
+**明确的硬边界**：这是 **1Hz 刷新，不是逐 token 流式**。进行中的文本不在 store 里（组被 `grew` 持有），只能由这个轮询捎带；store 自身的投影也在同一节拍落地，更细的时钟拿不到更多信息。做真流式需要 SSE/WebSocket，而这套架构没有推送通道——代价不匹配收益。
+
+### 会话内 DAG 分支（`91a5789`）
+
+**计划里的判断被实测推翻**。原话是会话内分支「比跨会话 fork 常见得多」：
+
+- 全语料 47 个文件里，真正的会话内分支（两个**用户提问**共享一个父节点）**只有 2 处**
+- 跨会话 fork 仅 ccSynapse 一个工作区就有 4 个
+
+**一大类干扰项必须排除**：每个文件里都有大量「多于一个子节点的节点」，但那是**并行工具调用**：
+
+```
+10 assistant tool_use WebFetch   ← 父
+11 assistant tool_use Glob       ← 挂在 10 下
+20 user tool_result (答复 10)     ← 也挂在 10 下，因为它是 10 的结果
+```
+
+工具结果挂到**它所答复的那次调用**的节点上。用户完全感知不到，不该做任何 UI。
+
+两处真实分支同形——**从同一点重新提问**，且第一次提问都没有助手回复：
+
+```
+669 system
+670 user  「帮我把P盘里…这个开头给去掉」        ← 撤回
+673 user  「帮我把P盘里…这个开头给去掉，重命名」  ← 重发，父节点同样是 669
+```
+
+根因：`app.js:754` 的 `if (card.turnIndex > 0) card.parentId = siblings[card.turnIndex - 1].id`——**每一轮无条件挂到前一轮**。
+
+做法：提问行用已有的 `uuidLine` 索引查 `parentUuid` 得到 `parentSeq` → 挂到事件上 → store 条件展开成 `sourceParentSeq` → 客户端 `turnCardContaining()` 按「一轮 = 从自己的提问到下一轮提问之前」的窗口解析父卡片，字段缺失或落在所有轮之前时回退到 `turnIndex - 1`。布局、thread 身份、去重逻辑、并行工具「分叉」都没碰。
+
+**子代理纠正了我给的验证判据**：我要求断言「其余所有提问的 `parentSeq` 都等于它前一行的 seq」。真实数据里**不成立**——`1579` 的父行是 `1573`、`1630` 的是 `1624`（父行是上一条 assistant/system 行，不一定是 seq-1）。但这些解析出的**卡片**仍等于 `turnIndex-1`，所以不是分叉。**判据必须算在卡片层（窗口包含），算在 seq 层会把这两处误报成分叉。** 这是一条我没有想到的区分。
+
+### 第六轮：第四次同类验证失误
+
+我在验证 `/api/live` 时连续三次判定「功能不工作」，全部是同一个错误：**把 session 的 key 当成了 JSON 里的 `sessionId` 字段，实际是文件名**（`sess.jsonl` → `sess`，而 JSON 里写的是 `s`）。
+
+```
+错误判据:  '"s"' in response        ← 永不匹配 "sess"
+真实响应:  {"sessions":{"sess":"seg1…seg12"}}
+```
+
+加上第五轮那三次，**六次「发现」里五次是探测方法的问题**。共同的形状是：**我假定了一个标识符/状态的含义，而没有先把它打出来核对**。
+
+**制度化的检查项**（写给后续维护者，也写给我自己）：
+1. 断言某个键存在前，先把实际的键/响应原样打出来一次
+2. 改判断逻辑前，先确认被判断的值是从哪来的（文件名？字段？渲染后的 DOM？）
+3. 验证「功能不工作」时，先用最小脚本在**最底层**确认数据正确，再逐层向上找——本轮就是靠这个定位到「transcript 层正常、问题在我的断言」
 
 ---
 
