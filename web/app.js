@@ -47,6 +47,14 @@ const savedCollapsedCards = (() => {
 const CARD_WIDTH = 310
 const CARD_HEIGHT = 276
 const DOT_SIZE = 48
+// A card collapses to a 48px dot when the assistant has not answered yet, or
+// never did. Rendering, connector anchors, fit-all bounds and the minimap must
+// all agree on which cards those are: a single disagreement leaves a line
+// ending hundreds of pixels away from the visible node, which is exactly what
+// happened when only the renderer knew about the no-reply case.
+const isDotCard = card => (card.answer === null && card.error === null)
+  || (card.dshSessionId != null && state.pendingReplies.has(card.dshSessionId))
+const cardSize = card => (isDotCard(card) ? { w: DOT_SIZE, h: DOT_SIZE } : { w: CARD_WIDTH, h: CARD_HEIGHT })
 const CARD_GAP_Y = 42
 const CAMERA_INSET_X = 56
 const CAMERA_INSET_Y = 56
@@ -568,16 +576,6 @@ function connectorPath(fromPosition, toPosition, { fromW = CARD_WIDTH, fromH = C
   return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
 }
 
-function connectorPathFromElements(fromCard, toCard) {
-  const fromX = Number.parseFloat(fromCard.style.left) + CARD_WIDTH
-  const fromY = Number.parseFloat(fromCard.style.top) + CARD_HEIGHT / 2
-  const toX = Number.parseFloat(toCard.style.left)
-  const toY = Number.parseFloat(toCard.style.top) + CARD_HEIGHT / 2
-  if (![fromX, fromY, toX, toY].every(Number.isFinite)) return null
-  const bend = Math.min(110, Math.max(36, Math.abs(toX - fromX) * .2))
-  return `M ${fromX} ${fromY} C ${fromX + bend} ${fromY}, ${toX - bend} ${toY}, ${toX} ${toY}`
-}
-
 function selectorValue(value) {
   return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
@@ -614,8 +612,11 @@ function refreshCardConnectors(cardId) {
     const toCard = byId.get(toId)
     if (fromCard === undefined || toCard === undefined) continue
     // Data-driven endpoints: the counterpart card may be unmounted (outside
-    // the viewport) but its position is still authoritative.
-    path.setAttribute('d', connectorPath(fromCard.position, toCard.position))
+    // the viewport) but its position is still authoritative. Each end carries
+    // its own size, or a dot endpoint anchors to where a full card would end.
+    const from = cardSize(fromCard)
+    const to = cardSize(toCard)
+    path.setAttribute('d', connectorPath(fromCard.position, toCard.position, { fromW: from.w, fromH: from.h, toH: to.h }))
   }
 }
 
@@ -902,22 +903,21 @@ function canvasConnectors(cards) {
     const parent = card.parentId === null ? null : index.get(card.parentId)
     if (parent === undefined || parent === null) return ''
     const active = card.dshThreadId === state.activeId && parent.dshThreadId === state.activeId ? ' active-connector' : ''
-    const fromDot = state.pendingReplies.has(parent.dshSessionId) || (parent.answer === null && parent.error === null)
-    const toDot = state.pendingReplies.has(card.dshSessionId) || (card.answer === null && card.error === null)
-    const dims = { fromW: fromDot ? DOT_SIZE : CARD_WIDTH, fromH: fromDot ? DOT_SIZE : CARD_HEIGHT, toH: toDot ? DOT_SIZE : CARD_HEIGHT }
-    return `<path class="${active.trim()}" data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position, dims)}"></path>`
+    const from = cardSize(parent)
+    const to = cardSize(card)
+    return `<path class="${active.trim()}" data-from="${escapeHtml(parent.id)}" data-to="${escapeHtml(card.id)}" d="${connectorPath(parent.position, card.position, { fromW: from.w, fromH: from.h, toH: to.h })}"></path>`
   })
   const placement = draftPlacement(cards)
   if (placement !== null) {
-    links.push(`<path class="draft-connector" data-from="${escapeHtml(placement.parent.id)}" data-to="draft" d="${connectorPath(placement.parent.position, placement.position)}"></path>`)
+    const from = cardSize(placement.parent)
+    links.push(`<path class="draft-connector" data-from="${escapeHtml(placement.parent.id)}" data-to="draft" d="${connectorPath(placement.parent.position, placement.position, { fromW: from.w, fromH: from.h })}"></path>`)
   }
   return links.join('')
 }
 
 function conversationCard(card, graph) {
-  const isPending = card.dshSessionId !== null && state.pendingReplies.has(card.dshSessionId)
-  const hasNoAssistantReply = card.answer === null && card.error === null
-  if (isPending || hasNoAssistantReply) {
+  if (isDotCard(card)) {
+    const isPending = card.dshSessionId != null && state.pendingReplies.has(card.dshSessionId)
     const selected = card.id === state.selectedCardId ? ' selected' : ''
     const label = isPending ? `等待回复（第 ${card.turnIndex + 1} 轮）` : `等待助手（第 ${card.turnIndex + 1} 轮）`
     return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-drag-card="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
@@ -1517,8 +1517,9 @@ function fitAllCards() {
     const { x, y } = card.position
     if (x < minX) minX = x
     if (y < minY) minY = y
-    if (x + CARD_WIDTH > maxX) maxX = x + CARD_WIDTH
-    if (y + CARD_HEIGHT > maxY) maxY = y + CARD_HEIGHT
+    const size = cardSize(card)
+    if (x + size.w > maxX) maxX = x + size.w
+    if (y + size.h > maxY) maxY = y + size.h
   }
   const bounds = viewport.getBoundingClientRect()
   const pad = 48
@@ -1552,8 +1553,9 @@ function _minimapWorldBounds() {
   for (const card of cards) {
     const { x, y } = card.position
     if (x < minX) minX = x; if (y < minY) minY = y
-    if (x + CARD_WIDTH > maxX) maxX = x + CARD_WIDTH
-    if (y + CARD_HEIGHT > maxY) maxY = y + CARD_HEIGHT
+    const size = cardSize(card)
+    if (x + size.w > maxX) maxX = x + size.w
+    if (y + size.h > maxY) maxY = y + size.h
   }
   return { minX, minY, maxX, maxY }
 }
@@ -1585,8 +1587,9 @@ function renderMinimap() {
   for (const card of state.canvasCards) {
     const x = card.position.x * scale + ox
     const y = card.position.y * scale + oy
-    const w = Math.max(2, CARD_WIDTH * scale)
-    const h = Math.max(1, CARD_HEIGHT * scale)
+    const size = cardSize(card)
+    const w = Math.max(2, size.w * scale)
+    const h = Math.max(1, size.h * scale)
     ctx.beginPath()
     if (ctx.roundRect) ctx.roundRect(x, y, w, h, 1.5)
     else ctx.rect(x, y, w, h)
