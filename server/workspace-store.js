@@ -560,6 +560,11 @@ export class WorkspaceStore {
       ...(projection.kind === 'assistant' || projection.kind === 'error'
         ? { turn: event.data?.turn, step: event.data?.step, process: [] }
         : {}),
+      // ccSynapse: the transcript LINE this question answered, when the
+      // transcript could name it. Two questions sharing one is an in-session
+      // branch; the canvas resolves the card's parent from it and treats a
+      // missing field as "the previous turn" (see conversationCards).
+      ...(projection.kind === 'user' && Number.isSafeInteger(event.data?.parentSeq) ? { sourceParentSeq: event.data.parentSeq } : {}),
     }
     this.attachPendingProcess(thread, message)
     thread.messages.push(message)

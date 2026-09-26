@@ -673,6 +673,15 @@ function layoutConversationGraph(cards, threads) {
   return placeConversationCards(cards)
 }
 
+/**
+ * The turn card that owns a transcript line: a turn spans from its own question
+ * to just before the next one, and the turns arrive in file order.
+ */
+function turnCardContaining(siblings, seq) {
+  const index = siblings.findLastIndex(card => Number.isInteger(card.sourceSeq) && card.sourceSeq <= seq)
+  return index === -1 ? undefined : siblings[index]
+}
+
 function conversationCards(threads) {
   const cards = []
   const cardsByThread = new Map()
@@ -711,6 +720,7 @@ function conversationCards(threads) {
         sourceParentId: thread.parentId,
         parentId: null,
         sourceSeq: question.sourceSeq,
+        sourceParentSeq: question.sourceParentSeq,
         turnIndex,
         naturalPosition,
         position,
@@ -754,8 +764,15 @@ function conversationCards(threads) {
   }
   for (const card of cards) {
     const siblings = cardsByThread.get(card.dshThreadId)
-    if (card.turnIndex > 0) card.parentId = siblings[card.turnIndex - 1].id
-    else {
+    if (card.turnIndex > 0) {
+      // A question whose answered line belongs to an EARLIER turn than its
+      // predecessor's is the user going back and asking again from that point:
+      // both questions hang off the turn that owns that line, and become
+      // siblings. An absent or unresolvable seq keeps the linear chain, so a
+      // missing field can never leave a card with no edge at all.
+      const inherited = Number.isInteger(card.sourceParentSeq) ? turnCardContaining(siblings, card.sourceParentSeq) : undefined
+      card.parentId = (inherited ?? siblings[card.turnIndex - 1]).id
+    } else {
       const parentCards = cardsByThread.get(card.sourceParentId)
       const sourceThread = threads.find(thread => thread.id === card.dshThreadId)
       const firstChildQuestion = siblings?.[0]

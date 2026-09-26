@@ -5,9 +5,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import vm from 'node:vm'
 
 import { TranscriptSource, detectForks, promptText } from '../server/transcript.js'
 
@@ -650,4 +651,91 @@ test('detectForks anchors each snapshot at its own fork line, not the parent end
   assert.equal(forks.get('early').seedLength, 31, 'anchored just past parent line 30')
   assert.equal(forks.get('late').parentSessionId, 'origin')
   assert.equal(forks.get('late').seedLength, 51, 'anchored just past parent line 50')
+})
+
+// --- in-session branches ----------------------------------------------------
+// The other lineage shape, and the rarer one: two questions in ONE session that
+// answer the same earlier line. A whole corpus of 47 session files holds two of
+// them. Nothing else on disk says so — the retry is an ordinary `user` line with
+// a string body, and the prompt it replaces is simply left unanswered.
+
+const systemLine = (uuid) => ({ type: 'system', subtype: 'init', uuid, timestamp: '2026-01-01T00:00:00.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1' })
+const promptLine = (uuid, parentUuid, text) => ({ type: 'user', uuid, parentUuid, timestamp: '2026-01-01T00:00:00.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { role: 'user', content: text } })
+
+test('a question answered from an earlier turn than its predecessor is a branch', async () => {
+  const { root, cleanup } = await fixture([
+    systemLine('s0'),                                            // line 0 — answered by 问题一
+    promptLine('u1', 's0', '问题一'),                             // line 1
+    assistantLine('m1', 0, { type: 'text', text: '答复一' }),     // line 2
+    systemLine('s1'),                                            // line 3 — the point the user went back to
+    promptLine('u2', 's1', '问题二'),                             // line 4
+    assistantLine('m2', 1, { type: 'text', text: '答复二' }),     // line 5
+    promptLine('u3', 's1', '问题二（改）'),                        // line 6 — re-asked from line 3
+  ])
+  try {
+    const store = stubStore()
+    await new TranscriptSource(root).sync(store, 'T')
+    const prompts = store.projected.filter(event => event.type === 'user/message')
+    assert.deepEqual(prompts.map(event => event.seq), [1, 4, 6])
+    assert.equal(prompts[1].data.parentSeq, 3, '问题二 answers the line above it')
+    // 问题二（改）answers line 3, NOT the reply on line 5 that it follows. That
+    // difference is the entire branch: the canvas hangs both questions, and only
+    // both questions, off the card that owns line 3.
+    assert.equal(prompts[2].data.parentSeq, 3, 'the retry answers an earlier line, not its predecessor')
+
+    // End to end: the field has to survive the store or the canvas sees nothing.
+    const { WorkspaceStore } = await import('../server/workspace-store.js')
+    const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-store-'))
+    const workspaceStore = new WorkspaceStore(join(directory, 'state.json'))
+    const session = { id: 'sess', title: 'T', header: { cwd: 'F:\\Project\\Demo' }, firstLiveSeq: 0, events: store.projected }
+    const thread = await workspaceStore.projectSession(session, 0, 'T')
+    assert.deepEqual(thread.messages.filter(message => message.kind === 'user').map(message => message.sourceParentSeq), [0, 3, 3])
+    await rm(directory, { recursive: true, force: true })
+  } finally { await cleanup() }
+})
+
+test('a linear conversation points every prompt at the line above it', async () => {
+  // The control. In a session where nobody ever went back, each prompt answers
+  // the line immediately above it, so nothing here may read as a fork.
+  const { root, cleanup } = await fixture([
+    systemLine('s0'),                                            // line 0
+    promptLine('u1', 's0', '问题一'),                             // line 1
+    assistantLine('m1', 0, { type: 'text', text: '答复一' }),     // line 2
+    promptLine('u2', 'a0', '问题二'),                             // line 3
+    assistantLine('m2', 1, { type: 'text', text: '答复二' }),     // line 4
+    promptLine('u3', 'a1', '问题三'),                             // line 5
+  ])
+  try {
+    const store = stubStore()
+    await new TranscriptSource(root).sync(store, 'T')
+    const prompts = store.projected.filter(event => event.type === 'user/message')
+    assert.deepEqual(prompts.map(event => event.data.parentSeq), [0, 2, 4])
+    assert.deepEqual(
+      prompts.map(event => event.data.parentSeq),
+      prompts.map(event => event.seq - 1),
+      'a linear session chains, so no card may resolve to a sibling',
+    )
+  } finally { await cleanup() }
+})
+
+test('the canvas resolves an answered line to the turn that owns it', async () => {
+  // The last hop: a card holds `sourceParentSeq`, and the canvas turns it into
+  // a parent card. A turn spans from its own question to just before the next
+  // one, so the answer is the last turn starting at or below that line. A line
+  // above every turn resolves to nothing, which is what sends the caller back
+  // to the linear chain instead of leaving a card with no edge at all.
+  const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8')
+  const slice = source.slice(source.indexOf('function turnCardContaining'), source.indexOf('function conversationCards'))
+  const context = { globalThis: {} }
+  vm.createContext(context)
+  vm.runInContext(`${slice};globalThis.turnCardContaining = turnCardContaining`, context)
+  const { turnCardContaining } = context.globalThis
+  // The 4efe8a21 shape: a question at line 670 whose answered line 669 belongs
+  // to the turn opened at 519, so it must NOT become the child of the card at 670.
+  const siblings = [{ id: 'turn:519', sourceSeq: 519 }, { id: 'turn:670', sourceSeq: 670 }, { id: 'turn:756', sourceSeq: 756 }]
+  assert.equal(turnCardContaining(siblings, 669).id, 'turn:519')
+  assert.equal(turnCardContaining(siblings, 670).id, 'turn:670', 'a question owns itself')
+  assert.equal(turnCardContaining(siblings, 755).id, 'turn:670')
+  assert.equal(turnCardContaining(siblings, 4), undefined, 'above every turn -> the linear fallback')
+  assert.equal(turnCardContaining([{ id: 'empty', sourceSeq: undefined }], 9), undefined, 'a placeholder card owns no line')
 })

@@ -417,6 +417,16 @@ export class TranscriptSource {
         // otherwise the store cannot find the card to fold them into and they
         // sit in pendingProcess forever, leaving every tool with result: null.
         if (event.type === 'tool/result') event.data = { ...event.data, turn: cache.turn, step: 1 }
+        // The LINE this prompt answers. Normally that is the line just before
+        // it, but a user who went back and re-asked from an earlier point
+        // leaves the same parentUuid on two prompts — the only in-session
+        // branch there is. The parent is always written before its child and
+        // the file is append-only, so the lookup cannot miss. Unknown → field
+        // absent, and the canvas falls back to the linear chain.
+        if (event.type === 'user/message') {
+          const parentSeq = typeof raw.parentUuid === 'string' ? cache.uuidLine.get(raw.parentUuid) : undefined
+          if (parentSeq !== undefined) event.data = { ...event.data, parentSeq }
+        }
         events.push(event)
       }
     }
