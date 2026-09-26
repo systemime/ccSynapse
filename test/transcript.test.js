@@ -297,18 +297,36 @@ test('detectForks needs more than one shared turn, so a common opener is not a f
 })
 
 test('detectForks uses UUID intersection when available, never misidentifies a retry', async () => {
-  // Fork: child shares parent's UUIDs plus adds new ones
-  const parentUuids = new Set(['u1', 'u2', 'u3'])
-  const childUuids  = new Set(['u1', 'u2', 'u3', 'u4', 'u5'])  // superset
+  // Fork: the child is a stale snapshot, so it holds a SUBSET of the parent's
+  // UUIDs — the original is the one that kept appending.
+  const parentUuids = new Set(['u1', 'u2', 'u3', 'u4', 'u5'])
+  const childUuids  = new Set(['u1', 'u2', 'u3'])               // subset
   const retryUuids  = new Set(['r1', 'r2', 'r3'])               // disjoint
 
   const sessions = new Map([
-    ['parent', { id: 'parent', uuidSet: parentUuids, fingerprint: [], turnSeqs: [], lastSeq: 30 }],
-    ['child',  { id: 'child',  uuidSet: childUuids,  fingerprint: [], turnSeqs: [], lastSeq: 50 }],
+    ['parent', { id: 'parent', uuidSet: parentUuids, fingerprint: [], turnSeqs: [], lastSeq: 50 }],
+    ['child',  { id: 'child',  uuidSet: childUuids,  fingerprint: [], turnSeqs: [], lastSeq: 30 }],
     ['retry',  { id: 'retry',  uuidSet: retryUuids,  fingerprint: [], turnSeqs: [], lastSeq: 30 }],
   ])
   const forks = detectForks(sessions)
-  assert.deepEqual([...forks.keys()], ['child'], 'only the UUID-superset is a fork')
+  assert.deepEqual([...forks.keys()], ['child'], 'only the UUID-subset is a fork')
   assert.equal(forks.get('child').parentSessionId, 'parent')
   assert.equal(forks.has('retry'), false, 'disjoint UUIDs are never a fork')
+  assert.equal(forks.has('parent'), false, 'the original is never a child')
+})
+
+test('detectForks assigns the larger session as parent, so snapshots are siblings', () => {
+  // A fork is a snapshot of the original: the original keeps growing, so it
+  // holds MORE uuids. Three snapshots taken at different times all descend
+  // from that one original — they must be siblings, not a chain.
+  const core = ['u1', 'u2', 'u3', 'u4', 'u5']
+  const sessions = new Map([
+    ['origin', { id: 'origin', uuidSet: new Set([...core, 'o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8']), fingerprint: [], turnSeqs: [], lastSeq: 100 }],
+    ['snapA',  { id: 'snapA',  uuidSet: new Set(core), fingerprint: [], turnSeqs: [], lastSeq: 30 }],
+    ['snapB',  { id: 'snapB',  uuidSet: new Set([...core, 'o1', 'o2']), fingerprint: [], turnSeqs: [], lastSeq: 50 }],
+  ])
+  const forks = detectForks(sessions)
+  assert.equal(forks.get('snapA')?.parentSessionId, 'origin')
+  assert.equal(forks.get('snapB')?.parentSessionId, 'origin')
+  assert.equal(forks.has('origin'), false, 'the original is never a child')
 })

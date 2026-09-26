@@ -482,6 +482,13 @@ export class TranscriptSource {
  * exactly — so being conservative here only costs auto-detection of hand-rolled
  * forks of very short sessions.
  *
+ * When UUIDs are available the same rule reads off containment: the fork is a
+ * snapshot of the original, so the child's UUID set is a subset and the parent
+ * — the session that kept growing — is the strictly larger one. Sizing alone
+ * does not pick between candidates that share the same core, so the largest of
+ * the equally-matching sessions wins: snapshots taken at different times become
+ * siblings under the original instead of a chain through one another.
+ *
  * @param {Map<string, {id: string, fingerprint: string[], turnSeqs: number[], lastSeq: number}>} sessions
  * @param {number} minShared minimum matching leading turns to call it a fork
  * @returns {Map<string, {parentSessionId: string, seedLength: number}>}
@@ -523,10 +530,15 @@ export function detectForks(sessions, minShared = 2) {
 
     for (const other of list) {
       if (other.id === session.id) continue
-      // Parent must be strictly smaller (fewer UUIDs) than child
-      if ((other.uuidSet?.size ?? 0) >= (session.uuidSet?.size ?? 0)) continue
+      // A fork is a snapshot of the original, so the CHILD holds fewer UUIDs:
+      // the parent must be strictly larger. The original keeps taking turns,
+      // which is why it ends up with the most UUIDs of the family.
+      if ((other.uuidSet?.size ?? 0) <= (session.uuidSet?.size ?? 0)) continue
       const shared = sharedCount.get(`${session.id}:${other.id}`) ?? 0
       if (shared === 0) continue
+      // Most shared UUIDs wins; ties go to the largest session, so snapshots
+      // taken at different times all hang off the original as siblings instead
+      // of chaining through each other (they share the same core, and tie).
       if (shared > bestShared || (shared === bestShared && bestParent !== null && (other.uuidSet?.size ?? 0) > (bestParent.uuidSet?.size ?? 0))) {
         bestShared = shared
         bestParent = other
@@ -535,6 +547,11 @@ export function detectForks(sessions, minShared = 2) {
 
     if (bestParent === null) continue
 
+    // The parent is the original session, so its `lastSeq` is the far end of a
+    // file that kept growing after the fork: the fork point sits somewhere in
+    // the parent's past, not at its end. There is no exact boundary in the UUID
+    // data (the child's snapshot is unordered), so this stays the parent's
+    // next-turn seq as before.
     const seedLength = bestParent.lastSeq
     if (Number.isSafeInteger(seedLength) && seedLength > 0) {
       forks.set(session.id, { parentSessionId: bestParent.id, seedLength })
