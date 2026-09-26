@@ -45,22 +45,27 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .workspace-label select { width: 100%; min-height: 33px; border: 1px solid #d8dee8; border-radius: 6px; background: #fff; color: #374151; padding: 0 28px 0 30px; }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; margin: 23px 4px 0; padding: 0; }
 .sidebar-heading button { display: grid; width: 24px; min-height: 24px; place-items: center; padding: 0; color: #111827; font-size: 17px; }
-.thread-tree { display: grid; gap: 3px; overflow: auto; padding-bottom: 12px; }
-.tree-row { display: flex; min-width: 0; align-items: center; gap: 8px; border: 0; background: transparent; color: #4b5563; text-align: left; }
+/* minmax(0, 1fr) keeps the single column at the container width: an auto track
+   sizes to max-content, which pushes deep rows past the sidebar and clips them. */
+.thread-tree { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; overflow-x: hidden; overflow-y: auto; padding-bottom: 12px; }
+/* --thread-color is the canvas card colour; the sidebar dots share it on purpose
+   so a session reads as the same blue node in both views. */
+.tree-row { display: flex; width: 100%; min-width: 0; box-sizing: border-box; min-height: 32px; align-items: center; gap: 8px; padding: 4px 8px; border: 0; background: transparent; color: #4b5563; text-align: left; cursor: pointer; --thread-color: #3478f6; --tree-guide: #e5e7eb; }
 .tree-row:hover { background: #f3f4f6; }
 .tree-row.active { background: #e5e7eb; color: #111827; font-weight: 650; }
-.tree-row span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.tree-row .tree-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.tree-row .tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .tree-row i { margin-left: auto; color: #94a3b8; font-size: 10px; font-style: normal; }
 .tree-dot, .topic-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--thread-color, #374151); }
-.tree-row { --thread-color: #3478f6 !important; }
 .tree-empty { padding: 12px 5px; color: #94a3b8; font-size: 12px; }
-.tree-indent-spacer { flex: none; width: var(--tree-indent, 0); }
+/* The indent spacer carries one guide line per ancestor level (10px apart, first
+   at 7px = the centre of an ancestor's 14px arrow). Width is the indent itself,
+   so a depth-0 row has width 0 and draws nothing. Negative margins let each
+   segment cover the row's 4px vertical padding, joining into one continuous line. */
+.tree-indent-spacer { flex: none; width: var(--tree-indent, 0); align-self: stretch; margin: -4px 0; background-image: repeating-linear-gradient(to right, var(--tree-guide, #e5e7eb) 0 1px, transparent 1px 10px); background-position: 7px 0; }
 .tree-arrow-gap { flex: none; width: 14px; }
 .tree-arrow { flex: none; width: 14px; height: 14px; padding: 0; border: 0; background: transparent; color: #94a3b8; font-size: 9px; line-height: 14px; text-align: center; cursor: pointer; border-radius: 3px; transition: transform 120ms ease, color 120ms ease; }
 .tree-arrow:hover { background: #e5e7eb; color: #374151; }
 .tree-arrow.open { transform: rotate(90deg); }
-.tree-row .tree-indent-spacer + .tree-arrow + .tree-dot { border-left: 1px solid #e5e7eb; margin-left: -1px; }
 .main-stage { position: relative; grid-column: 2; min-width: 0; min-height: 0; overflow: hidden; background: #f5f7fa; }
 .sidebar-collapsed .sidebar { align-items: center; padding: 18px 10px 6px; }
 .sidebar-collapsed .sidebar-brand-row { width: 36px; height: 36px; margin-bottom: 12px; padding: 0; }
@@ -399,8 +404,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] .workspace-select svg { stroke: #8f959e; }
 [data-theme="dark"] .tree-arrow { color: #737a83; }
 [data-theme="dark"] .tree-arrow:hover { background: #26282d; color: #a7adb5; }
-[data-theme="dark"] .tree-row .tree-indent-spacer + .tree-arrow + .tree-dot { border-left-color: #2a2d33; }
-[data-theme="dark"] .tree-row { color: #a7adb5; }
+[data-theme="dark"] .tree-row { background: #1b1c1f; color: #a7adb5; --tree-guide: #2a2d33; }
 [data-theme="dark"] .tree-row:hover { background: #26282d; }
 [data-theme="dark"] .tree-row.active { background: #2a2d33; color: #e6e8eb; }
 [data-theme="dark"] .tree-row i { color: #737a83; }
@@ -467,7 +471,6 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 @media (max-width: 760px) { [data-theme="dark"] .card-inspector { border-top-color: #2a2d33; border-left: 0; } }
 .minimap { position: fixed; z-index: 90; right: 16px; bottom: 16px; width: 160px; height: 100px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px; background: rgba(248,249,250,.92); backdrop-filter: blur(4px); cursor: crosshair; box-shadow: 0 2px 8px rgba(0,0,0,.1); touch-action: none; }
 [data-theme="dark"] .minimap { background: rgba(21,23,27,.92); border-color: rgba(255,255,255,.1); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
-.tree-date-group { }
 .tree-date-label { display: flex; align-items: center; gap: 4px; width: 100%; padding: 3px 8px; border: 0; background: transparent; color: #94a3b8; font-size: 11px; font-weight: 500; cursor: pointer; text-align: left; border-radius: 4px; }
 .tree-date-label:hover { background: #f1f5f9; color: #64748b; }
 .tree-date-arrow { flex: none; font-size: 8px; line-height: 1; transition: transform 120ms ease; color: #cbd5e1; }
