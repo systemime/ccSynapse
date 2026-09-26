@@ -55,6 +55,9 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .tree-row.active { background: #e5e7eb; color: #111827; font-weight: 650; }
 .tree-row .tree-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .tree-row i { margin-left: auto; color: #94a3b8; font-size: 10px; font-style: normal; }
+/* The folded "子代理 (N)" row: same row geometry as a thread, muted label and no
+   dot, so it reads as a folder rather than another session. */
+.tree-row-agent .tree-label { color: #94a3b8; }
 .tree-dot, .topic-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--thread-color, #374151); }
 .tree-empty { padding: 12px 5px; color: #94a3b8; font-size: 12px; }
 /* The indent spacer carries one guide line per ancestor level (10px apart, first
@@ -414,6 +417,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] .tree-row:hover { background: #26282d; }
 [data-theme="dark"] .tree-row.active { background: #2a2d33; color: #e6e8eb; }
 [data-theme="dark"] .tree-row i { color: #737a83; }
+[data-theme="dark"] .tree-row-agent .tree-label { color: #737a83; }
 [data-theme="dark"] .tree-empty { color: #737a83; }
 [data-theme="dark"] .brand::after { background: #e6e8eb; color: #111317; }
 [data-theme="dark"] .empty-canvas strong { color: #d7dae0; }

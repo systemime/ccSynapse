@@ -1220,6 +1220,11 @@ function buildThreadTree(threads) {
   return roots
 }
 
+// A thread whose session file was agent-<hex>.jsonl is a subagent its parent
+// spawned, not a conversation the user opened. One parent can spawn dozens of
+// them, so they are folded into a single row instead of tiling the sidebar.
+const isSubagentThread = thread => typeof thread.dshSessionId === 'string' && thread.dshSessionId.startsWith('agent-')
+
 function renderThreadNode(node, depth) {
   const { thread, children } = node
   const collapsed = state.collapsedTreeNodes.has(thread.id)
@@ -1237,8 +1242,22 @@ function renderThreadNode(node, depth) {
   // parser closes an outer button as soon as an inner one starts, which hoists
   // the arrow, dot and label out of the row and flattens the whole tree.
   const row = `<div class="tree-row ${thread.id === state.activeId ? 'active' : ''}" role="button" tabindex="0" data-action="select-thread" data-thread="${thread.id}" style="--tree-indent:${indent}px"><span class="tree-indent-spacer"></span>${arrowHtml}<span class="tree-dot"></span><span class="tree-label">${escapeHtml(threadListTitle(thread))}</span>${badge}</div>`
-  const childRows = (!collapsed && hasChildren) ? children.flatMap(child => renderThreadNode(child, depth + 1)).join('') : ''
-  return row + childRows
+  if (collapsed) return row
+  const childRows = children.filter(child => !isSubagentThread(child.thread)).flatMap(child => renderThreadNode(child, depth + 1)).join('')
+  return row + childRows + renderAgentGroup(thread, children.filter(child => isSubagentThread(child.thread)), depth + 1)
+}
+
+// Subagents fold into one synthetic row that is not a thread: no id, no
+// select-thread, clicking it only toggles. Absent from collapsedTreeNodes means
+// collapsed — the opposite of tree-arrow's "present means collapsed" — because
+// folded is the default here.
+function renderAgentGroup(parentThread, agents, depth) {
+  if (agents.length === 0) return ''
+  const key = `agent-group:${parentThread.id}`
+  const open = state.collapsedTreeNodes.has(key)
+  const indent = Math.min(depth, 4) * 10
+  const row = `<div class="tree-row tree-row-agent" role="button" tabindex="0" data-action="toggle-agent-group" data-group="${escapeHtml(key)}" style="--tree-indent:${indent}px"><span class="tree-indent-spacer"></span><button class="tree-arrow${open ? ' open' : ''}" data-action="toggle-agent-group" data-group="${escapeHtml(key)}" aria-label="${open ? '折叠' : '展开'}子代理" aria-expanded="${open ? 'true' : 'false'}">▶</button><span class="tree-label">子代理 (${agents.length})</span></div>`
+  return open ? row + agents.flatMap(child => renderThreadNode(child, depth + 1)).join('') : row
 }
 
 function groupRootsByDate(roots) {
@@ -1881,7 +1900,9 @@ app.addEventListener('click', async event => {
       render()
       return
     }
-    if (button.dataset.action === 'toggle-date-group' && button.dataset.group !== undefined) {
+    // Fold state for both date groups and agent groups: "present" means
+    // different things per prefix, but a toggle is symmetric either way.
+    if ((button.dataset.action === 'toggle-date-group' || button.dataset.action === 'toggle-agent-group') && button.dataset.group !== undefined) {
       const key = button.dataset.group
       state.collapsedTreeNodes.has(key) ? state.collapsedTreeNodes.delete(key) : state.collapsedTreeNodes.add(key)
       render()
