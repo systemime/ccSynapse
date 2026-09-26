@@ -5,12 +5,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import vm from 'node:vm'
 
 import { TranscriptSource, detectForks, promptText } from '../server/transcript.js'
+import { WorkspaceStore } from '../server/workspace-store.js'
 
 /** Minimal stand-in for WorkspaceStore that records what the projector emits. */
 function stubStore() {
@@ -189,6 +190,50 @@ test('a group stays open across the tool results of its own calls', async () => 
     assert.equal(thread.pendingProcess.length, 0, 'nothing left stranded')
     await rm(directory, { recursive: true, force: true })
   } finally { await cleanup() }
+})
+
+test('a reply that pauses for more than one poll keeps its first half', async () => {
+  // The group at EOF is released as soon as the file stops growing, so a pause
+  // longer than one poll lands the first half as a message of its own. The
+  // continuation is the SAME API message, and the canvas renders only a turn's
+  // last assistant message as the answer (app.js:705) — unmerged, the text the
+  // user just watched stream in disappears when the second half lands.
+  // Measured on a real corpus: 797 of 3416 intra-message pauses exceed 1s.
+  const id = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const { root, file, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_split', 0, { type: 'text', text: '前半句' }),
+  ])
+  const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-split-'))
+  try {
+    const store = new WorkspaceStore(join(directory, 'state.json'))
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')    // held: touches EOF
+    await source.sync(store, 'T')    // file stopped growing -> released as 前半句
+
+    // …the model pauses two seconds and then continues the same message.
+    await appendFile(file, `${JSON.stringify(assistantLine('msg_split', 1, { type: 'text', text: '后半句' }))}\n`, 'utf8')
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')    // released again, as a second event
+
+    const [workspace] = await store.list()
+    const graph = await store.get(workspace.id)
+    const thread = graph.threads.find(item => item.dshSessionId === id)
+    const replies = thread.messages.filter(message => message.kind === 'assistant')
+    assert.equal(replies.length, 1, 'one API message stays one card, however often it was released')
+    assert.equal(replies.at(-1).text, '前半句\n后半句', 'the answer the canvas shows holds both halves')
+
+    // A restart replays every file from line 0 against a store that already holds
+    // this message: the merge must not fold the halves in twice.
+    await store.flush()   // projection writes are debounced; a restart only sees flushed state
+    const reopened = new WorkspaceStore(join(directory, 'state.json'))
+    await new TranscriptSource(root).sync(reopened, 'T')
+    const after = (await reopened.get(workspace.id)).threads.find(item => item.dshSessionId === id)
+    assert.equal(after.messages.filter(message => message.kind === 'assistant').at(-1).text, '前半句\n后半句')
+  } finally {
+    await cleanup()
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('a tool result from another call still splits the group', async () => {
@@ -401,6 +446,75 @@ test('live text is capped like a projected message, and shows nothing without te
     // this into the card the finished answer replaces without the two disagreeing.
     assert.ok(capped.length < 8_100, `capped, got ${capped.length}`)
     assert.match(capped, /详情查看全文）$/)
+  } finally { await cleanup() }
+})
+
+test('a group left at the end of a cold file is not a reply in progress', async () => {
+  // Every file's FIRST read holds its trailing group open — there is no earlier
+  // size to compare against, so it counts as "grew". That is every session that
+  // ended on an assistant message, i.e. most of them: measured, 72 of 121 files
+  // on a real corpus report live text on the first sync and 0 of 121 on the
+  // second. Ungated, every server start flashes 「正在回复」on dozens of finished
+  // cards for one tick and pays a full re-render per card to clear them.
+  const id = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const { root, file, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_cold', 0, { type: 'text', text: '早就写完了' }),
+  ])
+  try {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000)
+    await utimes(file, tenMinutesAgo, tenMinutesAgo)
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    assert.equal((await source.sync(store, 'T')).get(id).liveText, null, 'cold file, nothing in progress')
+
+    // The gate must not switch the feature off: the same held group on a file
+    // that was written just now is a real reply in progress and must still show.
+    await appendFile(file, `${JSON.stringify(assistantLine('msg_cold', 1, { type: 'text', text: '又写了一句' }))}\n`, 'utf8')
+    assert.equal((await source.sync(store, 'T')).get(id).liveText, '早就写完了\n又写了一句')
+  } finally { await cleanup() }
+})
+
+test('a session whose transcript is gone stops being reported', async () => {
+  // A session kept past its file is worse than an absent one: its live text
+  // freezes and /api/live serves that stale pair on every tick, so the canvas is
+  // never told `running: false` and its card keeps a dead reply plus a
+  // 「正在回复」placeholder until the server restarts.
+  const id = 'aaaaaaaa-1111-2222-3333-444444444444'
+  const { root, file, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_gone', 0, { type: 'text', text: '写到一半就被删了' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    assert.equal((await source.sync(store, 'T')).get(id).liveText, '写到一半就被删了')
+
+    await rm(file)
+    const after = await source.sync(store, 'T')
+    assert.equal(after.size, 0, 'the deleted session is no longer reported at all')
+    assert.equal(source.caches.size, 0, 'and its read cache goes with it')
+
+    // Nothing else is collateral damage: a transcript still on disk keeps its
+    // session, and a file that comes back is re-projected from scratch.
+    const other = join(root, 'F--Project-Demo', 'bbbbbbbb-1111-2222-3333-444444444444.jsonl')
+    await writeFile(other, `${JSON.stringify(userLine('另一个'))}\n`, 'utf8')
+    assert.equal((await source.sync(store, 'T')).size, 1)
+  } finally { await cleanup() }
+})
+
+test('an unlistable root keeps the last known sessions instead of emptying them', async () => {
+  // `#listTranscripts` swallows read errors, so a gone root is indistinguishable
+  // from an empty one. Treated as empty, one failed readdir would un-name every
+  // session for a tick and tell the canvas `running: false` for all of them.
+  const { root, cleanup } = await fixture([userLine('问题'), assistantLine('msg_x', 0, { type: 'text', text: '在写' })])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    assert.equal((await source.sync(store, 'T')).size, 1)
+
+    await rm(root, { recursive: true, force: true })
+    assert.equal((await source.sync(store, 'T')).size, 1, 'last known state, not an empty world')
   } finally { await cleanup() }
 })
 

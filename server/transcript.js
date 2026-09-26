@@ -80,6 +80,10 @@ const TOOL_TRUNCATED_SUFFIX = '\n——…（已截断）'
 /** Most bytes of one transcript to ingest per poll, so a huge file cannot OOM the server. */
 const MAX_READ_BYTES = 16 * 1024 * 1024
 
+// How recently a transcript must have been written for the group held at its EOF
+// to count as a reply still being written. See `liveText` below.
+const LIVE_WINDOW_MS = 60_000
+
 function clampTool(text) {
   if (typeof text !== 'string' || text.length <= MAX_TOOL_LENGTH) return text
   return `${text.slice(0, MAX_TOOL_LENGTH)}${TOOL_TRUNCATED_SUFFIX}`
@@ -197,6 +201,12 @@ function translateLine(raw, seq, time) {
  * assistant message into a turn and shows only the last as the answer, so a
  * split message would silently drop text. `messageId` groups them; `seq` tracks
  * the group's latest line so its identity is stable across poll boundaries.
+ *
+ * A group is also released as soon as the file stops growing (see the `!grew`
+ * flush in #project), so a reply that pauses for longer than one poll is drained
+ * mid-message and continues in a NEW group with the same id. The id therefore
+ * rides along on the event and the store merges the two back into one message —
+ * without that, the canvas would show only the second half.
  */
 class AssistantGroup {
   constructor(turn) {
@@ -219,7 +229,7 @@ class AssistantGroup {
         seq: this.seq,
         time: this.time ?? new Date().toISOString(),
         type: 'assistant/message',
-        data: { message: { content: [{ type: 'text', text: this.parts.join('\n') }] }, turn: this.turn, step: 1 },
+        data: { message: { content: [{ type: 'text', text: this.parts.join('\n') }] }, turn: this.turn, step: 1, messageId: this.messageId },
       })
     }
     for (const call of this.toolCalls) events.push({ ...call, data: { ...call.data, turn: this.turn, step: 1 } })
@@ -273,10 +283,11 @@ export class TranscriptSource {
     this.sessions = new Map()
   }
 
+  /** @returns {string[]|null} transcript paths, or null when the root cannot be listed at all */
   async #listTranscripts() {
     let projects
     try { projects = await readdir(this.root, { withFileTypes: true }) }
-    catch { return [] }
+    catch { return null }
     const files = []
     for (const project of projects) {
       if (!project.isDirectory()) continue
@@ -500,7 +511,14 @@ export class TranscriptSource {
    * lineage detection and the bridge both work in real-id space.
    */
   async sync(store, fallbackTitle, mapSessionId = id => id) {
-    for (const path of await this.#listTranscripts()) {
+    const paths = await this.#listTranscripts()
+    // A root that cannot be listed is not an empty root. Treating it as empty
+    // would un-name every session for one tick — their live text would vanish
+    // and the canvas would be told `running: false` — so keep the last known
+    // state instead and let the next poll try again.
+    if (paths === null) return this.sessions
+
+    for (const path of paths) {
       let info
       try { info = await stat(path) } catch { continue }
 
@@ -552,7 +570,25 @@ export class TranscriptSource {
         // written — the one moment the canvas has nothing else to show. Its
         // text is NOT in the store yet (the group is held until it closes), so
         // this is the only way the client can see a reply before it finishes.
-        liveText: cache.open === null ? null : liveText(cache.open.parts),
+        //
+        // Only while the file is still warm, though. Every file's FIRST read has
+        // no size to compare against, so it counts as "grew" and holds its
+        // trailing group open — which is every session that ended on an
+        // assistant message, i.e. most of them (measured: 72 of 121 files report
+        // live on the first sync of a real corpus, 0 of 121 on the second).
+        // Ungated, every server start flashes 「正在回复」on dozens of finished
+        // cards for one tick. mtime is the honest signal: a group at EOF is only
+        // evidence of a live reply when the file was written moments ago.
+        //
+        // 60s, from the measured pause between two lines of the SAME assistant
+        // message (p50 0.39s, p90 2.2s, p99 15s, max 137s over 3416 gaps), so it
+        // covers an ordinary pause — a long tool run included — with margin.
+        // Erring small is also the cheaper error: a group wrongly called dead is
+        // drained into the store by the next poll like any other (nothing is
+        // lost), while one wrongly called live is a stale placeholder.
+        liveText: cache.open !== null && Date.now() - info.mtimeMs <= LIVE_WINDOW_MS
+          ? liveText(cache.open.parts)
+          : null,
       })
 
       try {
@@ -562,6 +598,36 @@ export class TranscriptSource {
       } catch (error) {
         console.warn(`[ccSynapse] projection failed for ${cache.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+
+    // Sessions whose transcript is gone must leave both maps. Nothing here keeps
+    // a session alive on purpose: `caches` is a pure read cache (a file that
+    // comes back is re-read from 0 and re-projected, which the store dedups by
+    // seq), and every `sessions` consumer wants the sessions that exist NOW —
+    // /api/live, fork detection, and the bridge's cwd/title lookups.
+    //
+    // Left in, a deleted session is worse than absent: its last `liveText` stays
+    // frozen and /api/live serves that pair on every tick, so the canvas is never
+    // told `running: false` for it and its card keeps a dead reply plus a
+    // 「正在回复」placeholder forever — across page reloads, until the server
+    // restarts.
+    //
+    // One consequence, already true today after any restart (the maps are
+    // rebuilt from disk then) and now merely immediate: a deleted transcript
+    // stops being a fork parent, so `detectForks` no longer reports its child
+    // and `clearLineage` detaches that child's edge. The rule is the existing
+    // one — lineage is whatever the current detection confirms — and the child
+    // card keeps its own turns; only the edge to a conversation that no longer
+    // exists is dropped.
+    const current = new Set(paths)
+    for (const path of [...this.caches.keys()]) {
+      if (!current.has(path)) this.caches.delete(path)
+    }
+    // By cache rather than by path, so a transcript that moved (its project
+    // directory renamed) does not delete the entry the new path just wrote.
+    const reading = new Set([...this.caches.values()].map(cache => cache.sessionId))
+    for (const id of [...this.sessions.keys()]) {
+      if (!reading.has(id)) this.sessions.delete(id)
     }
 
     // Resolve subagent parents. The directory says which session a subagent was

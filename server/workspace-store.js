@@ -557,17 +557,39 @@ export class WorkspaceStore {
     // branch; the canvas resolves the card's parent from it and treats a
     // missing field as "the previous turn" (see conversationCards).
     const sourceParentSeq = projection.kind === 'user' && Number.isSafeInteger(event.data?.parentSeq) ? event.data.parentSeq : undefined
+    const at = new Date(event.time).toISOString()
+    // ccSynapse: ONE API message can arrive as several events. The transcript
+    // holds a message's text open at the end of the file and releases it as soon
+    // as the file stops growing, so a reply that pauses for longer than one poll
+    // (measured: 797 of 3416 intra-message pauses exceed 1s) is released
+    // mid-message and continues in a new group carrying the same message id.
+    // The canvas shows only a turn's LAST assistant message as its answer, so
+    // left as two messages, the text the user just watched arrive disappears
+    // from the card the moment the second one lands. Fold the continuation back
+    // into the message it belongs to.
+    const messageId = typeof event.data?.messageId === 'string' && event.data.messageId !== '' ? event.data.messageId : null
+    const carried = messageId === null ? undefined : thread.messages.find(message => message.sourceMessageId === messageId)
+    if (carried !== undefined) {
+      // A restart replays every file from line 0. The message id cannot tell a
+      // replayed line from a new one, so the line's own seq does.
+      if (carried.sourceSeqs.includes(event.seq)) return
+      carried.sourceSeqs.push(event.seq)
+      const joined = noteProjection(projection.kind, `${carried.text}\n${projection.text}`)
+      if (joined !== null) carried.text = joined.text
+      thread.updatedAt = at
+      workspace.updatedAt = at
+      return
+    }
     const existing = thread.messages.find(message => message.sourceSeq === event.seq)
     if (existing !== undefined) {
       // Replay dedups by seq, so a field the projection rules only learned to
       // emit LATER (sourceParentSeq, added in 91a5789) can never reach a message
-      // written before it: every startup replay already carries the value and
-      // this branch throws it away. Backfill the hole instead — fill only, so a
+      // written before it: every startup replay carries the value and this
+      // branch throws it away. Backfill the hole instead — fill only, so a
       // recorded value is never overwritten by a stale re-read.
       if (existing.kind === 'user') existing.sourceParentSeq ??= sourceParentSeq
       return
     }
-    const at = new Date(event.time).toISOString()
     const message = {
       id: randomUUID(),
       text: projection.text,
@@ -577,6 +599,9 @@ export class WorkspaceStore {
       ...(projection.kind === 'assistant' || projection.kind === 'error'
         ? { turn: event.data?.turn, step: event.data?.step, process: [] }
         : {}),
+      // ccSynapse: the API message this line came from, so a message split
+      // across events by the poll boundary can be recognized and merged (above).
+      ...(messageId === null ? {} : { sourceMessageId: messageId, sourceSeqs: [event.seq] }),
       ...(sourceParentSeq === undefined ? {} : { sourceParentSeq }),
     }
     this.attachPendingProcess(thread, message)
