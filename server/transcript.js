@@ -313,11 +313,27 @@ export class TranscriptSource {
         // Rewritten or truncated in place. Restart the file; the store dedups by
         // seq, so replaying already-projected turns is a no-op.
         reportOnce(`rewrite:${cache.path}`, `transcript rewritten in place, reprojecting: ${cache.path}`)
+        // Every per-file field that is either keyed by line number or derived
+        // from the bytes on disk has to go with the offset: the rewrite moved
+        // every line, so a surviving index points at nothing (or at the wrong
+        // line). `uuidLine` was the one that bit — a prompt left holding its
+        // pre-rewrite parent line resolved to a seq at or past its own, and the
+        // card drew an edge to itself (and a fold button aimed at itself).
+        // Kept: path/sessionId/parentSessionId/toolUseId (identity, not
+        // content) and cwd/title (which session this file belongs to, and what
+        // to call it — neither is a line reference).
         cache.offset = 0
         cache.lineCount = 0
         cache.turn = 0
         cache.open = null
         cache.primed = false
+        cache.fingerprint = []
+        cache.turnSeqs = []
+        cache.turnParts = []
+        cache.uuidSet = new Set()
+        cache.uuidLine = new Map()
+        cache.issuedToolCalls = new Set()
+        cache.issuedToolLines = new Map()
       }
       cache.size = info.size
       if (info.size === cache.offset) return { lines: [], grew }

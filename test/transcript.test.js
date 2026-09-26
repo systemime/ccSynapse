@@ -782,3 +782,74 @@ test('the canvas resolves an answered line to the turn that owns it', async () =
   assert.equal(turnCardContaining(siblings, 4), undefined, 'above every turn -> the linear fallback')
   assert.equal(turnCardContaining([{ id: 'empty', sourceSeq: undefined }], 9), undefined, 'a placeholder card owns no line')
 })
+
+test('a shrunk-in-place transcript re-indexes the parent line instead of reusing the old one', async () => {
+  // Rewriting a transcript shorter moves EVERY later line, so an index built
+  // before the rewrite now names the wrong line — the prompt at old line 14 is
+  // at 11 after three tool results are removed, and its parent (old line 13) is
+  // at 10. Holding the stale `uuidLine` entry resolves the parent to 13, a seq
+  // past its own: the card becomes its own ancestor, drawing an edge and a fold
+  // button that both point at itself.
+  const toolUse = { type: 'tool_use', id: 'tu1', name: 'bash', input: {} }
+  const generations = [
+    [
+      systemLine('s0'),                                     // 0
+      promptLine('u1', 's0', '问题一'),                      // 1  -> answered line 0
+      assistantLine('m1', 0, { type: 'text', text: '答复一' }),  // 2
+      assistantLine('m1b', 1, toolUse),                     // 3
+      toolResultLine('tu1', '结果一'),                        // 4
+      toolResultLine('tu1', '结果二'),                        // 5  \
+      toolResultLine('tu1', '结果三'),                        // 6   > removed in gen 2
+      assistantLine('m2', 2, { type: 'text', text: '答复二' }),  // 7
+      promptLine('u2', 'a2', '问题二'),                      // 8  -> answered line 7
+      assistantLine('m3', 3, { type: 'text', text: '答复三' }),  // 9
+      toolResultLine('tu1', '结果四'),                        // 10 /
+      systemLine('s9'),                                     // 11
+      assistantLine('m4', 4, { type: 'text', text: '答复四' }),  // 12
+      systemLine('s10'),                                    // 13 <- answered line
+      promptLine('u3', 's10', '问题三'),                     // 14
+    ],
+    [
+      systemLine('s0'),                                     // 0
+      promptLine('u1', 's0', '问题一'),                      // 1
+      assistantLine('m1', 0, { type: 'text', text: '答复一' }),  // 2
+      assistantLine('m1b', 1, toolUse),                     // 3
+      toolResultLine('tu1', '结果一'),                        // 4
+      assistantLine('m2', 2, { type: 'text', text: '答复二' }),  // 5
+      promptLine('u2', 'a2', '问题二'),                      // 6
+      assistantLine('m3', 3, { type: 'text', text: '答复三' }),  // 7
+      systemLine('s9'),                                     // 8
+      assistantLine('m4', 4, { type: 'text', text: '答复四' }),  // 9
+      systemLine('s10'),                                    // 10 <- answered line
+      promptLine('u3', 's10', '问题三'),                     // 11
+    ],
+  ]
+  const write = (lines) => lines.map(line => `${JSON.stringify(line)}\n`).join('')
+  const { root, file, cleanup } = await fixture(generations[0])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    assert.deepEqual(store.projected.filter(event => event.type === 'user/message').map(event => event.data.parentSeq), [0, 7, 13])
+
+    await writeFile(file, write(generations[1]), 'utf8')
+    await source.sync(store, 'T')
+    const prompts = store.projected.filter(event => event.type === 'user/message')
+    const rewritten = prompts.at(-1)
+    assert.equal(rewritten.seq, 11, 'the shrinking rewrite moved the prompt')
+    assert.equal(rewritten.data.parentSeq, 10, 'the parent line is re-indexed, not the stale 13')
+    assert.ok(prompts.every(event => !Number.isInteger(event.data.parentSeq) || event.data.parentSeq < event.seq),
+      'no prompt may answer a line at or after itself')
+
+    // End to end: the value the store records is what the canvas reads.
+    const { WorkspaceStore } = await import('../server/workspace-store.js')
+    const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-store-'))
+    const workspaceStore = new WorkspaceStore(join(directory, 'state.json'))
+    await workspaceStore.projectSession({ id: 'sess', title: 'T', header: { cwd: 'F:\\Project\\Demo' }, firstLiveSeq: 0, events: store.projected }, 0, 'T')
+    const stored = await workspaceStore.get((await workspaceStore.list())[0].id)
+    const messages = stored.threads[0].messages.filter(message => message.kind === 'user')
+    assert.ok(messages.every(message => !Number.isInteger(message.sourceParentSeq) || message.sourceParentSeq < message.sourceSeq),
+      `a card must never parent itself: ${JSON.stringify(messages.map(m => [m.sourceSeq, m.sourceParentSeq]))}`)
+    await rm(directory, { recursive: true, force: true })
+  } finally { await cleanup() }
+})

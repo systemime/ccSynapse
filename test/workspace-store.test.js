@@ -282,6 +282,43 @@ test('coalesces deferred projection saves into one write', async () => {
   assert.equal(parsed.workspaces[0].threads[0].messages.length, 2)
 })
 
+test('backfills a field the projection learned to emit after the message was written', async () => {
+  // A field added to the projection rules (sourceParentSeq, 91a5789) cannot reach
+  // a message that was already projected: replay dedups by seq, so every startup
+  // replay carrying the value is thrown away. Without the backfill, every session
+  // projected before the change keeps a card chain that ignores in-session
+  // branches, forever, with no rebuild path — which is what real data showed.
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-backfill-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  const session = {
+    id: 'session-backfill', header: { meta: { cwd: 'C:\\work\\backfill' } }, firstLiveSeq: 0,
+    events: [
+      { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '问题一' }] } },
+      { type: 'user/message', seq: 1, time: 2, data: { content: [{ type: 'text', text: '问题二' }] } },
+    ],
+  }
+  // Written by a build that did not know about `parentSeq` at all.
+  const before = await store.projectSession(session)
+  assert.deepEqual(before.messages.map(message => message.sourceParentSeq), [undefined, undefined])
+
+  // The same two events, now carrying the value the transcript resolved.
+  session.events[1].data = { ...session.events[1].data, parentSeq: 0 }
+  const replayed = await store.projectSession(session)
+  assert.equal(replayed.messages.length, 2, 'the replay still does not duplicate a message')
+  assert.equal(replayed.messages[1].sourceParentSeq, 0, 'the hole is filled')
+  assert.equal(replayed.messages[0].sourceParentSeq, undefined, 'a prompt with no answered line gains nothing')
+
+  // Fill only. A later re-read must not overwrite what is already recorded.
+  session.events[1].data = { ...session.events[1].data, parentSeq: 9 }
+  const again = await store.projectSession(session)
+  assert.equal(again.messages[1].sourceParentSeq, 0)
+
+  // And it survives a restart, so the canvas sees it after the backfill pass.
+  await store.flush()
+  const reloaded = await new WorkspaceStore(join(directory, 'state.json')).get((await store.list())[0].id)
+  assert.equal(reloaded.threads[0].messages[1].sourceParentSeq, 0)
+})
+
 test('truncates over-long projections with a detail-view marker', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-truncate-'))
   const store = new WorkspaceStore(join(directory, 'state.json'))

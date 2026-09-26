@@ -551,7 +551,22 @@ export class WorkspaceStore {
       return
     }
     const projection = projectableEvent(event)
-    if (projection === null || thread.messages.some(message => message.sourceSeq === event.seq)) return
+    if (projection === null) return
+    // ccSynapse: the transcript LINE this question answered, when the
+    // transcript could name it. Two questions sharing one is an in-session
+    // branch; the canvas resolves the card's parent from it and treats a
+    // missing field as "the previous turn" (see conversationCards).
+    const sourceParentSeq = projection.kind === 'user' && Number.isSafeInteger(event.data?.parentSeq) ? event.data.parentSeq : undefined
+    const existing = thread.messages.find(message => message.sourceSeq === event.seq)
+    if (existing !== undefined) {
+      // Replay dedups by seq, so a field the projection rules only learned to
+      // emit LATER (sourceParentSeq, added in 91a5789) can never reach a message
+      // written before it: every startup replay already carries the value and
+      // this branch throws it away. Backfill the hole instead — fill only, so a
+      // recorded value is never overwritten by a stale re-read.
+      if (existing.kind === 'user') existing.sourceParentSeq ??= sourceParentSeq
+      return
+    }
     const at = new Date(event.time).toISOString()
     const message = {
       id: randomUUID(),
@@ -562,11 +577,7 @@ export class WorkspaceStore {
       ...(projection.kind === 'assistant' || projection.kind === 'error'
         ? { turn: event.data?.turn, step: event.data?.step, process: [] }
         : {}),
-      // ccSynapse: the transcript LINE this question answered, when the
-      // transcript could name it. Two questions sharing one is an in-session
-      // branch; the canvas resolves the card's parent from it and treats a
-      // missing field as "the previous turn" (see conversationCards).
-      ...(projection.kind === 'user' && Number.isSafeInteger(event.data?.parentSeq) ? { sourceParentSeq: event.data.parentSeq } : {}),
+      ...(sourceParentSeq === undefined ? {} : { sourceParentSeq }),
     }
     this.attachPendingProcess(thread, message)
     thread.messages.push(message)
