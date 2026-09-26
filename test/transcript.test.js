@@ -32,6 +32,7 @@ async function fixture(lines) {
 
 const userLine = (text) => ({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { role: 'user', content: text } })
 const assistantLine = (id, index, block) => ({ type: 'assistant', uuid: `a${index}`, timestamp: '2026-01-01T00:00:01.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { id, role: 'assistant', content: [block] } })
+const toolResultLine = (toolUseId, text) => ({ type: 'user', uuid: `r${toolUseId}`, timestamp: '2026-01-01T00:00:02.000Z', cwd: 'F:\\Project\\Demo', sessionId: 's1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] }, toolUseResult: {} })
 
 test('metadata lines lead the file, so cwd must be found later', async () => {
   const { root, cleanup } = await fixture([
@@ -97,7 +98,13 @@ test('one API message split across lines collapses to one assistant card', async
   ])
   try {
     const store = stubStore()
-    await new TranscriptSource(root).sync(store, 'T')
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    // The last line is this message's OWN tool result, which deliberately no
+    // longer closes its group — the message could still continue after it. The
+    // card is released once the file stops growing, exactly like any other
+    // group sitting on EOF.
+    await source.sync(store, 'T')
     const assistants = store.projected.filter(event => event.type === 'assistant/message')
     assert.equal(assistants.length, 1, 'text blocks of one message.id are one card')
     assert.equal(assistants[0].data.message.content[0].text, '第一段')
@@ -134,6 +141,75 @@ test('one API message split across lines collapses to one assistant card', async
   } finally { await cleanup() }
 })
 
+test('a group stays open across the tool results of its own calls', async () => {
+  // The risky shape: the model calls a tool, then keeps talking in the SAME API
+  // message, and the transcript puts that call's result between the two halves.
+  // Splitting there yields two assistant/message events for one message, and the
+  // canvas — which chains a turn's assistant messages and renders only the last
+  // — would silently drop the first half's text.
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_cut', 0, { type: 'text', text: '前段' }),
+    assistantLine('msg_cut', 1, { type: 'tool_use', id: 'toolu_x', name: 'Skill', input: { skill: 'x' } }),
+    toolResultLine('toolu_x', 'done'),
+    assistantLine('msg_cut', 3, { type: 'text', text: '续写' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')   // trailing group is held one poll
+    const assistants = store.projected.filter(event => event.type === 'assistant/message')
+    assert.equal(assistants.length, 1, 'the result did not cut the message in two')
+    assert.equal(assistants[0].data.message.content[0].text, '前段\n续写', 'both halves on one card')
+    assert.match(assistants[0].data.message.content[0].text, /续写/)
+
+    // The result must still be produced, stamped like the call it answers, or
+    // every tool folds into nothing and shows result: null.
+    const [result] = store.projected.filter(event => event.type === 'tool/result')
+    assert.equal(result.data.message.source.callId, 'toolu_x')
+    assert.equal(result.data.message.content[0].text, 'done')
+    const [call] = store.projected.filter(event => event.type === 'tool/call')
+    assert.equal(call.data.callId, 'toolu_x')
+    assert.deepEqual([result.data.turn, result.data.step], [call.data.turn, call.data.step])
+
+    // End-to-end through the store: the card comes first in the event stream
+    // anyway, and the result that was emitted before it still lands on it.
+    const { WorkspaceStore } = await import('../server/workspace-store.js')
+    const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-store-'))
+    const workspaceStore = new WorkspaceStore(join(directory, 'state.json'))
+    const session = { id: 'sess', title: 'T', header: { cwd: 'F:\\Project\\Demo' }, firstLiveSeq: 0, events: store.projected }
+    const thread = await workspaceStore.projectSession(session, 0, 'T')
+    assert.deepEqual(thread.messages.map(message => message.text), ['问题', '前段\n续写'])
+    assert.deepEqual(thread.messages[1].process.map(item => [item.callId, item.result]), [['toolu_x', 'done']])
+    assert.equal(thread.pendingProcess.length, 0, 'nothing left stranded')
+    await rm(directory, { recursive: true, force: true })
+  } finally { await cleanup() }
+})
+
+test('a tool result from another call still splits the group', async () => {
+  // The control for the test above: the pass is granted by callId, not by the
+  // line merely being a tool result. An id this group never issued keeps the old
+  // behaviour, so the rule cannot quietly become "nothing closes a group".
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_cut', 0, { type: 'text', text: '前段' }),
+    assistantLine('msg_cut', 1, { type: 'tool_use', id: 'toolu_x', name: 'Skill', input: { skill: 'x' } }),
+    toolResultLine('toolu_other', 'done'),
+    assistantLine('msg_cut', 3, { type: 'text', text: '续写' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')
+    const texts = store.projected
+      .filter(event => event.type === 'assistant/message')
+      .map(event => event.data.message.content[0].text)
+    assert.deepEqual(texts, ['前段', '续写'], 'a foreign result still ends the group')
+  } finally { await cleanup() }
+})
+
 test('appended lines project incrementally, keeping seq monotonic', async () => {
   const { root, file, cleanup } = await fixture([userLine('第一问')])
   try {
@@ -161,7 +237,9 @@ test('oversized tool payloads are capped so the state file stays bounded', async
   ])
   try {
     const store = stubStore()
-    await new TranscriptSource(root).sync(store, 'T')
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')   // own result at EOF: released next poll
     const call = store.projected.find(event => event.type === 'tool/call')
     const result = store.projected.find(event => event.type === 'tool/result')
     assert.ok(call.data.arguments.length < 2_100, `argument capped, got ${call.data.arguments.length}`)

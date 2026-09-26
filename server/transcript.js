@@ -370,8 +370,20 @@ export class TranscriptSource {
         continue
       }
 
-      // Any non-assistant line closes the open group.
-      this.#flush(cache, events)
+      // A tool_result that answers a call made by the OPEN group does not end
+      // that group. One API message's blocks are written across lines and its
+      // own results land in between them (measured shape: thinking / text /
+      // tool_use, the results, then another tool_use of the SAME message id).
+      // Closing there starts a second group for that id, and a second
+      // assistant/message with it — the canvas chains a turn's assistant
+      // messages and shows only the last, so the first one's text would vanish.
+      // Only results for calls this group issued get the pass. A result that
+      // belongs to an earlier group still closes it, and so does every other
+      // line: a real next prompt, system, attachment, mode.
+      const ownResult = cache.open !== null && raw.type === 'user' && Array.isArray(raw.message?.content)
+        && raw.message.content.some(block => block?.type === 'tool_result'
+          && cache.open.toolCalls.some(call => call.data.callId === block.tool_use_id))
+      if (!ownResult) this.#flush(cache, events)
       for (const event of translateLine(raw, seq, time)) {
         if (event.type === 'session/title') cache.title = event.data.title
         // Tool results need the same turn/step stamp as the calls they answer,
