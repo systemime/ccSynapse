@@ -330,3 +330,31 @@ test('detectForks assigns the larger session as parent, so snapshots are sibling
   assert.equal(forks.get('snapB')?.parentSessionId, 'origin')
   assert.equal(forks.has('origin'), false, 'the original is never a child')
 })
+
+test('detectForks anchors each snapshot at its own fork line, not the parent end', () => {
+  // Parent keeps growing; two snapshots were taken at different points.
+  // Each must get the seedLength of ITS fork cut so the canvas anchors the
+  // branch where it really forked.
+  const sessions = new Map([
+    ['origin', {
+      id: 'origin', fingerprint: [], turnSeqs: [], lastSeq: 900,
+      uuidSet: new Set(['a', 'b', 'c', 'd', 'e', 'f']),
+      uuidLine: new Map([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 60]]),
+    }],
+    ['early', {
+      id: 'early', fingerprint: [], turnSeqs: [], lastSeq: 40,
+      uuidSet: new Set(['a', 'b', 'c']),           // forked after parent line 30
+      uuidLine: new Map([['a', 5], ['b', 15], ['c', 25]]),
+    }],
+    ['late', {
+      id: 'late', fingerprint: [], turnSeqs: [], lastSeq: 60,
+      uuidSet: new Set(['a', 'b', 'c', 'd', 'e']), // forked after parent line 50
+      uuidLine: new Map([['a', 5], ['b', 15], ['c', 25], ['d', 35], ['e', 45]]),
+    }],
+  ])
+  const forks = detectForks(sessions)
+  assert.equal(forks.get('early').parentSessionId, 'origin')
+  assert.equal(forks.get('early').seedLength, 31, 'anchored just past parent line 30')
+  assert.equal(forks.get('late').parentSessionId, 'origin')
+  assert.equal(forks.get('late').seedLength, 51, 'anchored just past parent line 50')
+})

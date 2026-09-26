@@ -225,6 +225,7 @@ class SessionCache {
     this.turnSeqs = []
     this.turnParts = []
     this.uuidSet = new Set()
+    this.uuidLine = new Map()   // uuid -> seq (0-based line index) in THIS file
     this.primed = false
     this.parentSessionId = null
     this.toolUseId = null
@@ -339,7 +340,11 @@ export class TranscriptSource {
       const time = typeof raw.timestamp === 'string' ? raw.timestamp : new Date().toISOString()
 
       if (cache.cwd === null && typeof raw.cwd === 'string' && raw.cwd.trim() !== '') cache.cwd = raw.cwd
-      if (typeof raw.uuid === 'string' && raw.uuid.length > 0) cache.uuidSet.add(raw.uuid)
+      if (typeof raw.uuid === 'string' && raw.uuid.length > 0) {
+        cache.uuidSet.add(raw.uuid)
+        // First occurrence only: a later repeat must not move the fork cut.
+        if (!cache.uuidLine.has(raw.uuid)) cache.uuidLine.set(raw.uuid, seq)
+      }
       if (userPrompt(raw) !== null) cache.turn += 1
 
       if (raw.type === 'assistant') {
@@ -443,6 +448,7 @@ export class TranscriptSource {
         id: cache.sessionId, cwd: cache.cwd, title: cache.title, mtimeMs: info.mtimeMs,
         fingerprint: cache.fingerprint, turnSeqs: cache.turnSeqs, lastSeq: cache.lineCount,
         uuidSet: cache.uuidSet,
+        uuidLine: cache.uuidLine,
         parentSessionId: cache.parentSessionId ?? null,
         toolUseId: cache.toolUseId ?? null,
       })
@@ -470,10 +476,11 @@ export class TranscriptSource {
  *
  * `seedLength` is expressed in the PARENT's seq (line-index) space, because the
  * canvas resolves the fork anchor as "the last parent turn whose `sourceSeq` is
- * below the seed" (app.js:745-750). Using the parent's next-turn seq keeps
- * exactly the `shared` inherited turns inside the boundary and excludes the
- * first turn that exists only in the child; a fork made at the parent's end
- * falls back to the parent's total line count.
+ * below the seed" (app.js:773-786). The boundary is one past the parent's line
+ * for the last UUID the child still shares — the fork cut — so each snapshot
+ * anchors at the turn it actually forked from rather than at the parent's end.
+ * A parent with no line index (fingerprint path, hand-built sessions) falls
+ * back to its total line count.
  *
  * Two weak signals are ruled out by construction: a single shared turn (plenty
  * of unrelated sessions open with the same "你好"), and a fingerprint taken over
@@ -489,7 +496,7 @@ export class TranscriptSource {
  * the equally-matching sessions wins: snapshots taken at different times become
  * siblings under the original instead of a chain through one another.
  *
- * @param {Map<string, {id: string, fingerprint: string[], turnSeqs: number[], lastSeq: number}>} sessions
+ * @param {Map<string, {id: string, fingerprint: string[], turnSeqs: number[], lastSeq: number, uuidSet?: Set<string>, uuidLine?: Map<string, number>}>} sessions
  * @param {number} minShared minimum matching leading turns to call it a fork
  * @returns {Map<string, {parentSessionId: string, seedLength: number}>}
  */
@@ -547,12 +554,16 @@ export function detectForks(sessions, minShared = 2) {
 
     if (bestParent === null) continue
 
-    // The parent is the original session, so its `lastSeq` is the far end of a
-    // file that kept growing after the fork: the fork point sits somewhere in
-    // the parent's past, not at its end. There is no exact boundary in the UUID
-    // data (the child's snapshot is unordered), so this stays the parent's
-    // next-turn seq as before.
-    const seedLength = bestParent.lastSeq
+    // The fork cut is the last message the child inherited from the parent.
+    // Look it up in the parent's own line index so the canvas anchors the
+    // branch at the turn it actually forked from, not at the parent's end.
+    let forkLine = -1
+    for (const uuid of session.uuidSet ?? []) {
+      const line = bestParent.uuidLine?.get(uuid)
+      if (line !== undefined && line > forkLine) forkLine = line
+    }
+    // +1 because the consumer keeps cards with sourceSeq < seedLength.
+    const seedLength = forkLine >= 0 ? forkLine + 1 : bestParent.lastSeq
     if (Number.isSafeInteger(seedLength) && seedLength > 0) {
       forks.set(session.id, { parentSessionId: bestParent.id, seedLength })
     }
