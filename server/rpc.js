@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto'
 import * as defaultBridge from './bridge.js'
 
 /**
- * @param {{ source, aliases, locals, pendingForks, activeSessionRef, config, bridge? }} deps
+ * @param {{ source, aliases, locals, pendingForks, activeSessionRef, config, bridge?, onAlias? }} deps
  * activeSessionRef is a { id: string|null } box so the caller and this handler
  * share the same mutable value without a closure over a primitive.
  * bridge overrides the real bridge module (for tests).
+ * onAlias(realId, localId) is called when a new placeholder alias is minted, so
+ * the caller can persist it. Optional: the maps are the whole contract otherwise.
  */
-export function createRpcHandler({ source, aliases, locals, pendingForks, activeSessionRef, config, bridge = defaultBridge }) {
+export function createRpcHandler({ source, aliases, locals, pendingForks, activeSessionRef, config, bridge = defaultBridge, onAlias }) {
   const toLocal = id => (typeof id === 'string' ? aliases.get(id) ?? id : id)
   const toReal  = id => (typeof id === 'string' ? locals.get(id)  ?? id : id)
 
@@ -66,7 +68,11 @@ export function createRpcHandler({ source, aliases, locals, pendingForks, active
             ? await bridge.continueSession({ sessionId: toReal(local), text, cwd: source.sessions.get(toReal(local))?.cwd, extraArgs: config.backgroundArgs })
             : await bridge.forkSession({ sessionId: pending.parentSessionId, text, cwd: pending.cwd, extraArgs: config.backgroundArgs })
           if (result.sessionId !== null) {
-            if (pending !== undefined) { aliases.set(result.sessionId, local); locals.set(local, result.sessionId) }
+            if (pending !== undefined) {
+              aliases.set(result.sessionId, local)
+              locals.set(local, result.sessionId)
+              onAlias?.(result.sessionId, local)
+            }
             activeSessionRef.id = local
           }
           reply({ type: 'synapse:message-sent', requestId: body.requestId, session: { id: local } })

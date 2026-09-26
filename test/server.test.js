@@ -1,11 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 
 import { trustSet, rejectStatus } from '../server/trust.js'
 import { createRouter, sendJson } from '../server/routes.js'
 import { createRpcHandler } from '../server/rpc.js'
-import { NotFoundError } from '../server/workspace-store.js'
+import { WorkspaceStore, NotFoundError } from '../server/workspace-store.js'
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -151,6 +154,70 @@ test('synapse:fork-session 返回含 placeholder sessionId 的响应', async () 
 
   // placeholder is tracked so send-message can resolve it later
   assert.ok(pendingForks.has(msg.session.id))
+})
+
+test('synapse:send-message 拿到真实 id 后回调 onAlias(real, placeholder)', async () => {
+  const parentId = 'parent-session-id'
+  const sessions = new Map([
+    [parentId, { cwd: '/workspace', title: '主会话', lastSeq: 3, mtimeMs: Date.now() }],
+  ])
+  const pendingForks = new Map()
+  const aliases = new Map()
+  const locals = new Map()
+  const seen = []
+  const { handleRpc } = createRpcHandler({
+    source: stubSource(sessions),
+    aliases,
+    locals,
+    pendingForks,
+    activeSessionRef: { id: null },
+    config: { backgroundArgs: [] },
+    onAlias: (realId, localId) => seen.push([realId, localId]),
+    bridge: {
+      continueSession: async () => { throw new Error('stub: should not be called') },
+      forkSession:     async () => ({ shortId: null, sessionId: 'real-session-id', forked: true }),
+      createSession:   async () => { throw new Error('stub: should not be called') },
+      openInTerminal:  ()      => ({ opened: false, reason: 'test' }),
+    },
+  })
+
+  const [forked] = await handleRpc({ type: 'synapse:fork-session', sessionId: parentId, requestId: 'req-1' })
+  await handleRpc({ type: 'synapse:send-message', sessionId: forked.session.id, text: '继续', requestId: 'req-2' })
+
+  assert.deepEqual(seen, [['real-session-id', forked.session.id]])
+  assert.equal(aliases.get('real-session-id'), forked.session.id)
+  assert.equal(locals.get(forked.session.id), 'real-session-id')
+})
+
+// ---------------------------------------------------------------------------
+// 画布分支别名的持久化（重启后不丢）
+// ---------------------------------------------------------------------------
+
+test('setAlias 落到用户状态文件，新的 store 实例能读回', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-alias-'))
+  const dataFile = join(directory, 'workspaces.json')
+  await new WorkspaceStore(dataFile).setAlias('real-session-id', 'placeholder-id')
+
+  // 重启：同一文件上新建实例
+  const reopened = new WorkspaceStore(dataFile)
+  assert.deepEqual(await reopened.listAliases(), { 'real-session-id': 'placeholder-id' })
+
+  // 别名是不可重建的用户状态 → 必须进 workspaces.json，不能只在投影缓存里
+  const state = JSON.parse(await readFile(dataFile, 'utf8'))
+  assert.deepEqual(state.sessionAliases, { 'real-session-id': 'placeholder-id' })
+  const projection = await readFile(join(directory, 'workspaces-projection.json'), 'utf8').catch(() => '')
+  assert.ok(!projection.includes('placeholder-id'))
+})
+
+test('老 workspaces.json 没有 sessionAliases 字段时归一为空对象', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ccsynapse-alias-legacy-'))
+  const dataFile = join(directory, 'workspaces.json')
+  await writeFile(dataFile, JSON.stringify({ version: 4, hiddenSessionIds: [], workspaces: [] }))
+
+  const store = new WorkspaceStore(dataFile)
+  assert.deepEqual(await store.listAliases(), {})
+  await store.setAlias('real-session-id', 'placeholder-id')
+  assert.deepEqual(await store.listAliases(), { 'real-session-id': 'placeholder-id' })
 })
 
 // ---------------------------------------------------------------------------
