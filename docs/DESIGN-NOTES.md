@@ -657,3 +657,68 @@ P1-3 (启动预热) / P1-4 (XSS) ✅
 **回顾一处判断修正**：图谱判定 P0-3 为孤岛（C18，零依赖）——实际执行时它确实在任意时间点独立完成，与其他项无耦合。这条图谱结论得到了验证。
 
 **新出现的计划外工作**：人工测试暴露了 6 个 UI 问题（小地图、缩放下限、等待节点形态、按钮跳转、树形结构、空回复节点），全部不在原评估范围内。这类问题只有真实使用才会暴露——评估覆盖了架构与算法，但覆盖不了交互手感。
+
+---
+
+## 第十轮：适配 Codex（`8b01db0`）
+
+目标是让 Codex 的会话也进同一张画布。**开工前先把格式测清楚**，因为这一步的结论决定了整个适配的复杂度——也对上了一处此前的教训：对 Claude Code 曾按 SDK 文档假定 `--fork-session` 会重写 UUID，实测发现 295/300 原样保留，那个近似从一开始就不必要。
+
+### 两个 harness 的格式对比（实测）
+
+| 项 | Claude Code | Codex |
+|---|---|---|
+| 位置 | `~/.claude/projects/<proj>/<uuid>.jsonl` | `~/.codex/sessions/<年>/<月>/<日>/rollout-*.jsonl` |
+| 序号 | 行号 | **`ordinal` 字段**（数据自带） |
+| **轮次归属** | 归并 `message.id` + `grew` 时序持有 | **`turn_id` 覆盖 100% 的条目** |
+| 条目类型 | 二十余种 | **6 种**与投影相关 |
+| 注入包装 | `<system-reminder>` / `<local-command-*>` | `<environment_context>` ×12 / `<turn_aborted>` ×6 |
+| cwd | 逐行找（43/63 个文件首行没有） | `session_meta.cwd` |
+| 分支命令 | `claude --resume <id> --fork-session` | `codex fork <SESSION_ID> [PROMPT]` |
+
+**轮次切分这一项，Codex 简单一个数量级。** 我们为 Claude Code 修了三轮（message-id 归并 → `grew` 时序 → 结构判据，见第五、六轮），而 Codex 的 `turn_id` 直接给出答案。
+
+交叉验证很干净：`<environment_context>` 12 + `<turn_aborted>` 6 + 无包装 32 = 50，而 `event_msg/item_completed` 里 `item.type === 'UserMessage'` **恰好 32**。两个独立来源对上，所以「真实提问」的判据有据可依——这条交叉验证写进了测试，不是写死 32。
+
+### 我给的判据被实测推翻（第二次了）
+
+我建议 `intermediate`（叙述 vs 输出）用结构判据：「同一 `turn_id` 内既有 message 又有 tool_call」。
+
+**本机语料里有 8 轮同时含工具调用和 `final_answer`**——那个判据会把 **8 张真答案误标成叙述**。
+
+实际采用的是 `payload.phase === 'commentary'`：**模型自己声明的字段**（commentary 56 / final_answer 19 / 无 phase 4）。数据自带的信号胜过结构猜测。4 条无 phase 的经人工核对也都是答案（都是该轮最后一条、前后无工具调用、正文 194–2267 字），两个判据在这 4 条上一致。
+
+### 一处会静默出错的细节
+
+`thread.harness ??= harnessOf(session)` —— **只在创建时定一次**。原因是 `applyLineage` 回放的是不带 harness 的 header，每次重算会把 Codex thread 改回 Claude Code。这类「回放覆盖了权威值」的缺陷，正是本项目反复吃亏的模式。
+
+### id 不加前缀，因为测过
+
+Codex 的 13 个 id 对 123 个 Claude 转录文件**零重合**，且两边 UUID 版本不同。加前缀要同时改 `aliases` / `locals` / `detectForks` / `applyLineage` / bridge ——正是本项目出过 7 次的那类连锁改动，而实测的碰撞风险为零。
+
+### 没有设计无法验证的东西
+
+**本机 12 个 Codex 会话之间没有任何共享 item id**，即没有 Codex fork 可供测量。所以「`codex fork` 是否保留 id」**保持未验证**，也就**不做** Codex 侧的分支血缘自动识别——这与我当初对 Claude Code 犯的错（先设计启发式再声称有效）正好相反。
+
+### 共享原语与一处实测
+
+`server/projection.js` 抽出两个适配器共用的部分：增量读取 `readAppended`、截断 `clampTool`/`MAX_TOOL_LENGTH`、`liveText`/`LIVE_WINDOW_MS`。Claude Code 侧行为未动——那 92 个原有测试覆盖了这次搬迁。
+
+**liveText 的语义是实测出来的**：对着一个真实运行的 Codex 会话采样，发现**追加是整条的**（6104 字的助手消息从「不存在」到「完整」一次写入，没有中间尺寸）。所以磁盘上永远没有半截文本，唯一可能在写的就是文件末尾那条消息——按住它作为 liveText，与 Claude Code 的「EOF 处的 group」语义一致，客户端那条「正在回复」的通路完全没改。
+
+### 验收
+
+- **105 个测试通过**（92 原有 + 13 新增），原有 92 个一个没动
+- 真实语料：12 会话 / 32 提问 / 12 条 `developer` 全部跳过 / 18 条注入包装全部过滤
+- **变异验证**确认新测试不是空转：`intermediate` 恒 false → 1 红；去掉注入过滤 → 3 红；`seq` 不用 `ordinal` → 3 红；不传 `harness` → 1 红；`thinking` 不带上 → 1 红；hold 不放 → 8 红
+- 浏览器：真实画布上 **6 张「Codex 会话」与 Claude Code 卡片共存**，按钮分别显示「在 Codex 中打开」与「在 Claude Code 中打开」
+
+### 一处已知的行为差异（非缺陷）
+
+语料里有一轮含**两条真实提问**（同一 `turn_id`，用户中途补了一句），画布把它拆成两张卡，工具记录按「后一句之后」切分。`turn` 契约仍成立（同一 `turn_id` 落在同一轮），只是 store 的按轮折叠遇到「一轮两问」时会这样分。Claude Code 侧结构上不会出现这种形状。
+
+### 明确未做
+
+- Codex 的 `fork` / `continue` 桥接（`codex exec` / `codex fork`）
+- Codex 侧安装（`~/.codex/skills/` + Codex 插件 manifest 格式还没看）
+- 从画布对 Codex 会话发起分支——但**没有放任它做错**：rpc 对 Codex 会话的 `fork-session`/`send-message` 直接返回 bridge-error，否则 `claude --resume <codex uuid>` 会凭空开一个空 Claude 会话
