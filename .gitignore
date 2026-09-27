@@ -1,3 +1,6 @@
 
 # git worktrees used for parallel work — never tracked
 .claude/worktrees/
+
+# design-review output
+.ui-design/

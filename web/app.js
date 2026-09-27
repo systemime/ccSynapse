@@ -549,6 +549,12 @@ function firstAvailableCardPosition(position, occupied) {
   }
 }
 
+// The new-session draft belongs where a thread root would start, but that is a
+// preference, not a guarantee: the first card already owns (86, 82), and a draft
+// drawn on top of it looks like it replaced that card. Same solver, so the
+// draft lands on the first free row instead — unchanged on an empty canvas.
+const newDraftPosition = cards => firstAvailableCardPosition({ x: 86, y: 82 }, cards.map(card => card.position))
+
 function connectorPath(fromPosition, toPosition, { fromW = CARD_WIDTH, fromH = CARD_HEIGHT, toH = CARD_HEIGHT } = {}) {
   const fromX = fromPosition.x + fromW
   const fromY = fromPosition.y + fromH / 2
@@ -603,7 +609,7 @@ function refreshCardConnectors(cardId) {
 }
 
 function initialCanvasCamera(cards) {
-  const draft = state.draft?.kind === 'new' ? { id: 'draft:new', position: { x: 86, y: 82 } } : draftPlacement(cards)
+  const draft = state.draft?.kind === 'new' ? { id: 'draft:new', position: newDraftPosition(cards) } : draftPlacement(cards)
   // Focus the active conversation's latest turn, not its first: after many
   // rounds the canvas should open where work is happening, at the newest card.
   const activeCards = state.activeId === null || state.activeId === undefined ? [] : cards.filter(card => card.dshThreadId === state.activeId)
@@ -1148,10 +1154,13 @@ function draftPlacement(cards) {
 
 function draftCard(cards) {
   const draft = state.draft
-  if (draft?.kind === 'new') return `<article class="thread-card draft-card first-session-card" data-card-id="draft" style="left:86px;top:82px;--thread-color:#3478f6">
+  if (draft?.kind === 'new') {
+    const position = newDraftPosition(cards)
+    return `<article class="thread-card draft-card" data-card-id="draft" style="left:${position.x}px;top:${position.y}px;--thread-color:#3478f6">
     <div class="thread-card-head"><span class="topic-dot"></span><strong>新会话</strong></div>
     <form class="draft-branch-form" data-draft><textarea maxlength="4000" placeholder="输入第一条消息" ${draft.sending ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>${draftActions(draft)}</form>
   </article>`
+  }
   const placement = draftPlacement(cards)
   if (draft === null || placement === null) return ''
   const continuing = draft.kind === 'continue'
@@ -1468,9 +1477,11 @@ function render() {
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
   const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点" aria-label="整理节点"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>整理</button><button data-action="focus-active" title="定位到当前会话" aria-label="定位到当前会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2.6M8 11.9v2.6M1.5 8h2.6M11.9 8h2.6"/></svg>定位</button><button data-action="fit-all" title="缩放到全览" aria-label="缩放到全览">全览</button><button data-action="zoom-out" aria-label="缩小" title="缩小"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 8h9"/></svg></button><span aria-label="缩放比例">${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大" title="放大"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><button data-action="search-cards" title="搜索卡片（Ctrl+K）" aria-label="搜索卡片" aria-expanded="${searchEl.hidden ? 'false' : 'true'}"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>搜索</button></div>` : ''
   const detailAvailable = currentThread() !== null
-  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas" aria-pressed="${state.mode === 'canvas'}">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" aria-pressed="${state.mode === 'thread'}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
+  // The only view switcher: the duplicate fixed pill in the topbar was removed
+  // rather than layered, because two controls for one piece of state drift.
+  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button type="button" class="${state.mode === 'canvas' ? 'active' : ''}" aria-pressed="${state.mode === 'canvas'}" data-action="show-canvas">地图</button><button type="button" class="${state.mode === 'thread' ? 'active' : ''}" aria-pressed="${state.mode === 'thread'}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   const archivedSection = state.archivedSessionIds.length === 0 ? '' : `<div class="sidebar-heading"><span>已归档</span></div><nav class="thread-tree">${state.archivedSessionIds.map(id => `<div class="tree-row" role="button" tabindex="0" data-action="unarchive-session" data-session="${escapeHtml(id)}" title="恢复此会话"><span class="tree-dot"></span><span class="tree-label">${escapeHtml(id.slice(0, 8))}…</span><i>恢复</i></div>`).join('')}</nav>`
-  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${renderThreadTree(threads)}</nav>${archivedSection}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="show-thread" data-thread="${state.activeId ?? currentThread()?.id ?? ''}" type="button" ${detailAvailable ? '' : 'disabled'} aria-pressed="${state.mode === 'thread' ? 'true' : 'false'}">对话</button><button class="${state.mode === 'canvas' ? 'active' : ''}" type="button" aria-pressed="${state.mode === 'canvas' ? 'true' : 'false'}" data-action="show-canvas">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}${selectionFollowupButton()}</section></main>`
+  app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${renderThreadTree(threads)}</nav>${archivedSection}</aside><header class="topbar">${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}${selectionFollowupButton()}</section></main>`
   installDragging()
   cacheCardConnectors()
   renderMinimap()
@@ -1737,7 +1748,14 @@ function _minimapTransform(W, H) {
 }
 
 function renderMinimap() {
-  const show = state.mode === 'canvas' && state.canvasCards !== undefined && state.canvasCards.length > 0
+  // The minimap and the card inspector both dock to the bottom-right corner —
+  // the inspector's action row is exactly where the minimap's canvas is, so
+  // clicks aimed at "在 Claude Code 中打开" panned the canvas instead. Two
+  // surfaces in one corner is a hit-test fight; the panel being read wins and
+  // the minimap (canvas chrome) yields for as long as it is open. Structural:
+  // the same state that says whether the panel exists says whether the minimap
+  // is drawn, so narrow (bottom sheet) and wide (right column) agree.
+  const show = state.mode === 'canvas' && state.inspectorCardId === null && state.canvasCards !== undefined && state.canvasCards.length > 0
   minimapEl.hidden = !show
   if (!show) return
   const ctx = minimapEl.getContext('2d')
@@ -1853,7 +1871,7 @@ function focusActiveCard() {
   // Drafts win over the active conversation's latest turn; fall back to the
   // first card.
   const draft = state.draft === null ? undefined
-    : state.draft.kind === 'new' ? { position: { x: 86, y: 82 } } : draftPlacement(cards)
+    : state.draft.kind === 'new' ? { position: newDraftPosition(cards) } : draftPlacement(cards)
   const activeCards = state.activeId === null || state.activeId === undefined ? [] : cards.filter(card => card.dshThreadId === state.activeId)
   const card = draft ?? activeCards.at(-1) ?? cards[0]
   centerCanvasOnCard(card)

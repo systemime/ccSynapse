@@ -11,7 +11,7 @@ async function loadLayout() {
   const end = source.indexOf('function conversationCards')
   const context = { globalThis: {}, console }
   vm.createContext(context)
-  vm.runInContext(`${source.slice(start, end)};globalThis.layout = { layoutConversationGraph }`, context)
+  vm.runInContext(`${source.slice(start, end)};globalThis.layout = { layoutConversationGraph, firstAvailableCardPosition, newDraftPosition }`, context)
   return context.globalThis.layout
 }
 
@@ -50,6 +50,28 @@ test('a turn asked again from an earlier point forks without moving anyone', asy
   assert.deepEqual(first, ['86,82', '451,82', '451,400', '816,82'])
   assert.deepEqual(cards.map(entry => at(entry.naturalPosition)), first, 'no card is placed by collision')
   assert.deepEqual(place(layout, threads, build()), first, 'the layout is reproducible')
+})
+
+test('the new-session draft takes the first free row instead of the first card', async () => {
+  const { newDraftPosition } = await loadLayout()
+  assert.equal(at(newDraftPosition([])), '86,82', 'an empty canvas keeps the empty-state origin')
+  // The first thread root owns (86, 82) — the origin the draft used to hard-code.
+  assert.equal(at(newDraftPosition([{ position: { x: 86, y: 82 } }])), '86,400')
+})
+
+test('every .thread-card rule sizes the box the layout contract states', async () => {
+  const css = await readFile(new URL('../web/styles.css', import.meta.url), 'utf8')
+  const blocks = [...css.matchAll(/\.thread-card\s*\{([^}]*)\}/g)].map(match => match[1])
+  assert.ok(blocks.length > 0, 'the stylesheet still has a .thread-card rule')
+  // connectorPath, overlapsCard, firstAvailableCardPosition, the minimap and
+  // fitAllCards all read CARD_WIDTH/CARD_HEIGHT. A media query that narrows the
+  // rendered card leaves every connector starting past its parent's right edge.
+  for (const block of blocks) {
+    const width = /(?:^|;)\s*width:\s*([^;]+)/.exec(block)
+    const height = /(?:^|;)\s*height:\s*([^;]+)/.exec(block)
+    if (width !== null) assert.equal(width[1].trim(), '310px', `.thread-card width must be CARD_WIDTH: ${block.trim()}`)
+    if (height !== null) assert.equal(height[1].trim(), '276px', `.thread-card height must be CARD_HEIGHT: ${block.trim()}`)
+  }
 })
 
 test('a fork yields to another session rather than pushing it', async () => {
