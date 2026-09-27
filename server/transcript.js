@@ -178,7 +178,15 @@ function translateLine(raw, seq, time) {
 
   if (type === 'system') {
     if (raw.subtype === 'compact_boundary') {
-      reportOnce('compact', 'compaction boundary seen; pre-compaction turns are not recoverable from the transcript')
+      // A notice, not a warning: the boundary carries no turn, the summary that
+      // follows it is machine-authored and dropped by `userPrompt`, and the
+      // turns it summarizes are still on disk. Measured on this repo's own
+      // session — two boundaries, and every pre-boundary prompt still projects.
+      // (The line used to claim they were "not recoverable", which was false
+      // and told a reader their history was gone while the canvas drew it.)
+      const meta = raw.compactMetadata
+      const cut = meta === undefined ? '' : ` (context ${meta.preTokens} → ${meta.postTokens} tokens, ${meta.trigger})`
+      reportOnce('compact', `compaction boundary at seq ${seq}${cut}: the model's context was cut here, the transcript keeps every turn`)
     }
     return []
   }
