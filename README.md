@@ -1,8 +1,8 @@
 # ccSynapse
 
-Claude Code 的可视化会话地图。把同一工作目录下的会话、追问、分支和子代理投影成一张可拖拽、可缩放的画布，并且可以从画布上直接发起分支。
+**Claude Code 和 Codex 共用的可视化会话地图。** 把同一工作目录下的会话、追问、分支和子代理投影成一张可拖拽、可缩放的画布，并且可以从画布上直接发起分支。
 
-Codex 的会话（`~/.codex/sessions`）也读进同一张画布，卡片上标出它来自哪个 harness；Codex 侧目前是**只读**的——从画布分支/继续只对 Claude Code 会话开放。
+两个 harness 的会话读进**同一张画布**，卡片上标出它来自哪个：`会话目录` 扫 `~/.claude/projects`，`Codex 会话目录` 扫 `~/.codex/sessions`，两边都存在就都画，缺哪边都只是跳过。Codex 侧目前是**只读**的——从画布分支/继续只对 Claude Code 会话开放（见下方「与宿主的边界」）。
 
 是 [dsh-synapse](https://github.com/liangmianya/dsh-synapse)（DeepSeek Harness 的会话地图插件）在 Claude Code 上的移植。
 
@@ -24,24 +24,53 @@ Codex 的会话（`~/.codex/sessions`）也读进同一张画布，卡片上标�
 
 ## 安装
 
+两种宿主，装哪个都行，**两个都装也行**——服务只有一个，画布是同一张。零依赖，只需要 Node ≥ 22。
+
+### Claude Code
+
 ```
 /plugin marketplace add systemime/ccSynapse
 /plugin install ccsynapse@ccsynapse
 ```
 
-然后：
-
-```
-/synapse
-```
-
-它会启动本地服务并打开 `http://127.0.0.1:3080/`。装了插件的会话里，服务也会在 `SessionStart` 时自动预热，`/synapse` 通常只是打开浏览器。
-
-也可以不经插件直接跑（零依赖，只需要 Node ≥ 22）：
+### Codex
 
 ```bash
-node server/index.js
+codex plugin marketplace add systemime/ccSynapse
+codex plugin add ccsynapse@ccsynapse
 ```
+
+> 本地克隆同理：把 `systemime/ccSynapse` 换成克隆目录的路径。
+
+### 不用插件
+
+```bash
+git clone https://github.com/systemime/ccSynapse
+cd ccSynapse && node server/index.js
+```
+
+## 使用
+
+服务起来后打开 **http://127.0.0.1:3080/** ——画布就是首页，不需要点任何东西。
+
+| 从哪开始 | 怎么做 |
+|---|---|
+| Claude Code | 敲 `/synapse`（停在 3080 的服务会被复用），它会顺手开浏览器 |
+| Codex | 说「打开会话地图」（技能名 `synapse`） |
+| 没用插件 | `node server/index.js`，然后自己开上面那个地址 |
+
+服务是常驻进程，`Ctrl+C` 结束；端口被占用时会打印一条可读提示后退出，不会留下半启动的进程。
+
+装了插件的话，服务会在**会话开始时自动预热**（`hooks/hooks.json` 的 `SessionStart`），所以 `/synapse` 通常只是开个浏览器。
+
+进去之后：
+
+- 左侧「工作区」下拉切工作目录，每个目录一张画布；「会话」树列出该目录下所有会话（分支挂在父会话下，子代理折成一行，悬停可看完整 UUID）
+- 点会话树的任意一行 → 画布跳到那个会话最新一轮并高亮闪一下
+- 卡片默认只显示这一轮的**提问**和**输出**，其余收在底部徽标里，点一下就地展开
+- 卡片底部：`详情`（完整记录）、`终端`（在原生 CLI 里打开）、`归档`
+- 画布：拖拽平移、滚轮缩放（8%–400%）、右下角小地图、「整理」「定位」「全览」
+- 选中回答里的文字可以带进新的追问；`Ctrl+K`（macOS `Cmd+K`）全文搜索
 
 ## 配置
 
@@ -58,6 +87,7 @@ node server/index.js
 | `CCSYNAPSE_CLAUDE_BIN` | 自动探测 | `claude` 可执行文件路径 |
 | `CCSYNAPSE_CODEX_BIN` | 自动探测 | `codex` 可执行文件路径（仅用于「终端」按钮） |
 | `CCSYNAPSE_TRUSTED_HOSTS` | 空 | 额外允许的 Host（局域网访问时填写） |
+| `CCSYNAPSE_THEME` | `light` | 画布主题；只有填 `dark` 会切暗色 |
 
 ### 两个数据文件，删除的后果不同
 
@@ -68,11 +98,24 @@ node server/index.js
 
 改投影规则、想重跑一遍时，删 `workspaces-projection.json` 那一个就够——删 `workspaces.json` 会连你的手工排版一起丢掉。
 
-## 与 Claude Code 的边界
+## 与两个宿主的边界
 
-- 会话记录（`~/.claude/projects/**/*.jsonl`）始终是唯一事实来源，ccSynapse **只读不写**。
+- 会话记录（`~/.claude/projects/**/*.jsonl`、`~/.codex/sessions/**/rollout-*.jsonl`）始终是唯一事实来源，ccSynapse **只读不写**。
 - 插件不修改 prompt、模型请求、工具 schema 或 provider 路由。
 - 服务默认只监听 `127.0.0.1`。
+
+### Codex 侧能做什么、不能做什么
+
+| | Claude Code 会话 | Codex 会话 |
+|---|---|---|
+| 投影到画布（提问、输出、工具计数、流式回显） | ✅ | ✅ |
+| 血缘（fork 靠 UUID 相交、子代理挂父会话） | ✅ | fork 未验证；子代理不适用 |
+| 从画布「分支」/「继续追问」 | ✅ `claude --bg --fork-session` | ❌ 明确报错 |
+| 「终端」按钮 | `claude --resume` | `codex resume` |
+
+Codex 侧的分支**没有做**，而且不是省略——`claude --resume <codex 的 id>` 认不出那个 id，会凭空开一个空的 Claude Code 会话，画布上就多出一张永远填不上的卡片。所以 RPC 对 Codex 会话直接返回错误，而不是让它错下去。要用 Codex 的会话，走它自己的 `codex resume` / `codex fork`。
+
+同样**没做**的还有 Codex 侧的血缘自动识别：本机语料里 12 个 Codex 会话之间没有任何共享条目 id，没有 fork 可测，所以「`codex fork` 是否保留 id」这个问题保持**未验证**，也就不据此写任何启发式。
 
 ### 安全
 
@@ -118,12 +161,12 @@ $env:CCSYNAPSE_BG_ARGS="--permission-mode acceptEdits"   # 或按需给别的模
 
 ```bash
 npm run build    # node --check 全部 JS
-npm test         # node --test，92 个测试
+npm test         # node --test，105 个测试
 ```
 
-测试覆盖七块：`transcript`（投影与血缘）、`workspace-store`（移植的行为测试）、`trust`（信任闸）、`server`（路由与 RPC）、`markdown-renderer`、`card-search`、`canvas-layout`。
+测试覆盖八块：`transcript`（Claude Code 投影与血缘）、`codex`（Codex 投影）、`workspace-store`（移植的行为测试）、`trust`（信任闸）、`server`（路由与 RPC）、`markdown-renderer`、`card-search`、`canvas-layout`。
 
-`docs/DESIGN-NOTES.md` 记录了九轮改造的实测数据与推理过程，包括几处**用测量推翻原有判断**的地方——这本项目的多数缺陷不是「写错了」，而是「同一个事实在多于一处被独立计算，其中一处算错」，那份文档记录了这条模式的具体形态。
+`docs/DESIGN-NOTES.md` 记录了十一轮改造的实测数据与推理过程，包括几处**用测量推翻原有判断**的地方——这本项目的多数缺陷不是「写错了」，而是「同一个事实在多于一处被独立计算，其中一处算错」，那份文档记录了这条模式的具体形态。
 
 ## 来源与许可
 

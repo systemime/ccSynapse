@@ -1,6 +1,6 @@
 ---
 name: synapse
-description: 打开 ccSynapse 会话地图 — 把 Claude Code 的会话、追问和分支投影成一张可拖拽、可缩放的画布，并能从画布上直接发起分支。当用户想浏览或回顾会话历史、查看会话之间的分支关系、在画布上继续某个会话时使用。
+description: 打开 ccSynapse 会话地图 — 把 Claude Code 和 Codex 的会话、追问、分支和子代理投影成一张可拖拽、可缩放的画布，并能从画布上直接发起分支。当用户想浏览或回顾会话历史、查看会话之间的分支关系、在画布上继续某个会话时使用。
 ---
 
 # 会话地图
@@ -21,8 +21,15 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3080/api/workspaces
 2. 后台启动服务（用 `run_in_background: true`，不要用阻塞方式运行）：
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/server/index.js"
+ROOT="${CCSYNAPSE_ROOT:-${CLAUDE_PLUGIN_ROOT:-<本技能目录>/../..}}"
+node "$ROOT/server/index.js"
 ```
+
+`<本技能目录>` 就是宿主报告的「Base directory for this skill」——技能在 `<仓库根>/skills/synapse/`，所以上两级就是仓库根。
+
+- Claude Code：`$CLAUDE_PLUGIN_ROOT` 直接可用。
+- Codex：**不设** `CLAUDE_PLUGIN_ROOT`（实测为 null），走第三条；插件缓存里是整份仓库，`server/` 就在那里。
+- 手工 clone：设 `CCSYNAPSE_ROOT`，或者直接 `cd <克隆目录> && node server/index.js`。
 
 等它打印出 `ccSynapse 会话地图: http://127.0.0.1:3080/` 再继续。
 
@@ -32,7 +39,7 @@ node "${CLAUDE_PLUGIN_ROOT}/server/index.js"
 cmd //c start "" http://127.0.0.1:3080/
 ```
 
-4. 告诉用户画布**就是默认视图，不需要点任何东西**，并说明能做什么：
+4. 告诉用户画布**就是默认视图，不需要点任何东西**，并说明能做什么（**Claude Code 与 Codex 的会话在同一张画布上**，卡片标出来源；Codex 侧只读）：
 
    - **导航**：拖动画布平移、滚轮缩放（8%–400%）、右下角小地图点击或拖拽定位、「全览」把所有卡片收进视口
    - **切换会话**：左侧「会话」树点一行就切到那个会话，画布跳到它最新一轮并高亮闪一下（悬停那一行能看到完整会话 UUID）
@@ -51,13 +58,18 @@ cmd //c start "" http://127.0.0.1:3080/
 | `CCSYNAPSE_PORT` | `3080` | 端口 |
 | `CCSYNAPSE_HOST` | `127.0.0.1` | 监听地址 |
 | `CCSYNAPSE_HOME` | `$CLAUDE_PLUGIN_DATA` → `~/.claude/synapse` | 画布元数据目录 |
-| `CCSYNAPSE_PROJECTS` | `~/.claude/projects` | 会话记录目录 |
+| `CCSYNAPSE_PROJECTS` | `~/.claude/projects` | Claude Code 会话记录目录 |
+| `CCSYNAPSE_CODEX_SESSIONS` | `~/.codex/sessions` | Codex rollout 目录；不存在就跳过，不算错误 |
 | `CCSYNAPSE_BG_ARGS` | 空 | 每次 `claude --bg` 追加的参数，例如 `--permission-mode acceptEdits` |
 | `CCSYNAPSE_CLAUDE_BIN` | 自动探测 | `claude` 可执行文件路径 |
+| `CCSYNAPSE_CODEX_BIN` | 自动探测 | `codex` 可执行文件路径（只用于「终端」按钮） |
+| `CCSYNAPSE_THEME` | `light` | 只有 `dark` 会切到暗色 |
 | `CCSYNAPSE_TRUSTED_HOSTS` | 空 | 额外允许的 Host，局域网访问时填写 |
 
 ## 注意
 
+- 两个 harness 的会话目录在启动时各扫一次，**缺哪个都不算错误**（日志会写明跳过）。
+- **Codex 会话是只读的**：画布上的「分支」「继续追问」对 Codex 会明确报错，不会偷偷用 `claude --resume` 去开一个空会话。用 Codex 的会话请走它自己的 `codex resume` / `codex fork`。
 - 分支走 `claude --bg --resume <id> --fork-session`。后台会话没有终端，需要授权的工具调用会被拒绝；如果分支卡住，设置 `CCSYNAPSE_BG_ARGS="--permission-mode acceptEdits"` 后重启服务。
 - `claude --bg` 要求工作目录已在 Claude Code 里被信任，否则会直接报「Workspace not trusted」。
 - **画布数据是两个文件，删除的后果不同**：

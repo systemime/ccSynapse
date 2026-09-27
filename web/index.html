@@ -3,13 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ccSynapse — Claude Code 会话地图</title>
+<title>ccSynapse — 会话地图</title>
 <link rel="stylesheet" href="/styles.css">
-<script>
-  // Settle the theme before first paint. The server's synapse:theme message
-  // only arrives after the first round trip, which would otherwise flash light.
-  document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-</script>
 </head>
 <body>
 <div id="app"></div>

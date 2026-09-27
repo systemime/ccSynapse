@@ -1,0 +1,23 @@
+{
+  "name": "ccsynapse",
+  "version": "0.1.0",
+  "description": "会话地图：把 Claude Code 与 Codex 的会话记录投影成一张可拖拽、可缩放的画布，并可从画布上直接发起分支。",
+  "license": "MIT",
+  "author": {
+    "name": "ccSynapse"
+  },
+  "homepage": "https://github.com/systemime/ccSynapse",
+  "repository": "https://github.com/systemime/ccSynapse",
+  "keywords": ["session-map", "canvas", "history", "visualization"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ccSynapse",
+    "shortDescription": "把所有会话铺成一张可拖拽的画布",
+    "longDescription": "把同一工作目录下的会话、追问、分支和子代理投影成一张会话地图，Claude Code 与 Codex 的会话在同一张画布上，卡片标出来源。可从任意一轮发起分支、按提问和回答全文搜索、归档与恢复会话。",
+    "developerName": "ccSynapse",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read"],
+    "websiteURL": "https://github.com/systemime/ccSynapse",
+    "defaultPrompt": ["打开会话地图"]
+  }
+}

@@ -31,7 +31,7 @@ export function createRpcHandler({ source, aliases, locals, pendingForks, active
     switch (body.type) {
       case 'synapse:request-current': {
         reply({ type: 'synapse:map-opened' })
-        reply({ type: 'synapse:theme', dark: body.dark === true })
+        reply({ type: 'synapse:theme', dark: config.theme === 'dark' })
         const session = currentSession()
         if (session !== null) reply({ type: 'synapse:current-session', session })
         break

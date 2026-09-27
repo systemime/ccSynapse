@@ -1916,6 +1916,9 @@ function focusActiveCard() {
   const activeCards = state.activeId === null || state.activeId === undefined ? [] : cards.filter(card => card.dshThreadId === state.activeId)
   const card = draft ?? activeCards.at(-1) ?? cards[0]
   centerCanvasOnCard(card)
+  // A jump nobody can see is a jump you have to hunt for, so 定位 rings its
+  // landing the way a sidebar pick does. A draft has no card to ring.
+  if (draft === undefined) flashCard(card.id)
 }
 
 let selectionFollowup = null
@@ -2496,7 +2499,10 @@ function handleHostMessage(data) {
   if (data.type === 'synapse:bridge-error') { settleRpc(data.requestId, undefined, new Error(data.message)); if (data.requestId === undefined) setError(data.message) }
 }
 
-void post('synapse:request-current', { dark: window.matchMedia('(prefers-color-scheme: dark)').matches })
+// The theme is the server's to name (`CCSYNAPSE_THEME`), not the OS's. A canvas
+// is read in daylight and a dark OS — the default after sunset on most machines
+// — flipped it for no reason the user could see or undo.
+void post('synapse:request-current', {})
 refreshSummaries().catch(setError)
 let polling = false
 let liveRenderTimer = 0

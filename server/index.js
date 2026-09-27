@@ -41,6 +41,10 @@ const config = {
   // Codex's own layout: <root>/<YYYY>/<MM>/<DD>/rollout-*.jsonl.
   codexSessions: process.env.CCSYNAPSE_CODEX_SESSIONS ?? join(homedir(), '.codex', 'sessions'),
   workspaceTitle: process.env.CCSYNAPSE_WORKSPACE_TITLE ?? 'Claude Code 任务',
+  // Light unless asked otherwise. The port followed a host theme, and the OS
+  // preference is not a substitute for one: it flips at sunset, on a canvas
+  // that is read while working.
+  theme: process.env.CCSYNAPSE_THEME === 'dark' ? 'dark' : 'light',
   // Extra flags for every `claude --bg` spawn, e.g.
   //   CCSYNAPSE_BG_ARGS="--permission-mode acceptEdits"
   // A background session has no terminal, so a tool call that needs approval

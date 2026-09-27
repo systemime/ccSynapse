@@ -792,3 +792,84 @@ getComputedStyle(card, '::after').opacity   // 强制样式重算，与是否绘
 - **105 个测试通过**（未新增：这次是 DOM 接线，真浏览器就是它的检查，写单测只能测到假 DOM）
 - 浏览器实测：跳转后落点卡 dx/dy = 0；`selected` 1.2s 后仍在，`is-flash` 已消失；被相机新挂载的卡两个标记都有；环的插值曲线与暗色取值如上
 - 明确未做：`定位` 按钮不带闪烁（用户没要；它跳的是同一张卡，改一行就能带上）
+
+## 第十二轮：定位闪烁、默认亮色、Codex 安装（本轮）
+
+用户的四条：①切工作区已够用 ②「定位」也带闪烁 ③默认明亮主题 ④确保自动兼容 Claude Code 与 Codex，README 说清装法和用法。
+
+### ① 不动
+
+切工作区能看到不同会话——这条本来就成立，没有改。
+
+### ② 定位带闪烁
+
+`focusActiveCard` 跳转后调同一个 `flashCard`。草稿卡没有卡可闪（`draft !== undefined` 时跳过），因为它根本不在 `cards` 里。第 11 轮留的那个「没做」到此关闭。
+
+### ③ 默认亮色：两处在问操作系统
+
+```
+web/index.html:11   matchMedia('(prefers-color-scheme: dark)')   ← 首屏前定色
+web/app.js:2499     post('synapse:request-current', { dark: … })  ← 问服务器要主题
+```
+
+两处都不再问 OS：首屏那段整块删掉（`:root` 本来就是亮色，没有 `[data-theme="light"]` 这种规则），`request-current` 空载荷。主题改由服务端命名：`CCSYNAPSE_THEME=dark`。
+
+实测两个一次性实例（`CCSYNAPSE_HOME` 指向临时目录，不碰真实数据）：
+
+```
+无环境变量  → {"type":"synapse:theme","dark":false}
+CCSYNAPSE_THEME=dark → {"type":"synapse:theme","dark":true}
+```
+
+保留暗色可达不是恋旧：`styles.css` 里有 **174 条** `[data-theme="dark"]` 规则，一条环境变量把它们从死代码变回一条通路。
+
+顺带把 `<title>` 从「Claude Code 会话地图」改成「会话地图」——画布上现在两个 harness 的会话都有，标题不该只提一个。
+
+### ④ Codex 侧：先量，结果推翻了我的写法
+
+**Codex 有和 Claude Code 同形的插件系统**（实测本机 0.150.1）：
+
+```bash
+codex plugin marketplace add <本地路径 | owner/repo | git url>
+codex plugin add <name>@<marketplace>
+```
+
+清单格式也同形：`.codex-plugin/plugin.json`（`skills: "./skills/"` + `interface`）与 `.agents/plugins/marketplace.json`。本机装的 ponytail 正好也有`.codex-plugin/plugin.json`，互相印证这不是我猜的。所以仓库同时挂两份清单：`.claude-plugin/` 和 `.codex-plugin/`，共用同一个 `skills/synapse/SKILL.md`（frontmatter 格式两边一致）。
+
+**装进去之后量到两件事：**
+
+1. 插件缓存是整个仓库的副本（`~/.codex/plugins/cache/ccsynapse/ccsynapse/0.1.0/`，`server/`、`web/` 都在），技能目录是 `<缓存根>/skills/synapse` ✓
+2. **Codex 不设 `CLAUDE_PLUGIN_ROOT`**。实测 `{"root":null,"data":null}`。
+
+第 2 条直接判了原有技能文件死刑：它写的是 `node "${CLAUDE_PLUGIN_ROOT}/server/index.js"`——在 Codex 下会解析成 `/server/index.js`，**必然失败**。改成三级阶梯：
+
+```bash
+ROOT="${CCSYNAPSE_ROOT:-${CLAUDE_PLUGIN_ROOT:-<本技能目录>/../..}}"
+```
+
+第三级靠的是「技能一定在 `<仓库根>/skills/synapse/`」这个不变量，两个宿主的插件缓存都是整份仓库，所以上两级就是仓库根。
+
+**验证方式不是读代码，是让 Codex 自己展开它**（一次 `codex exec`，read-only、不问权限）：它把 ROOT 解析成 `C:\Users\OwO\.codex\plugins\cache\ccsynapse\ccsynapse\0.1.0`，并列出该路径下 `server/index.js`、`transcript.js` 等 10 个文件确实都在。
+
+### 写 README 时抓到一句假话
+
+README 原来写着「装了插件的会话里，服务也会在 `SessionStart` 时自动预热」。机制存在（`.claude/hooks/hooks.json` + `server/prestart.js`），句子也存在——**但两者的路径对不上**：`.claude/hooks/hooks.json` 只在仓库被当作**项目**打开时才是设置源，装成**插件**后 Claude Code 读的是 `<插件根>/hooks/hooks.json` 或 `plugin.json` 的 `hooks` 字段。也就是说，这条自动预热对插件用户**从来没有生效过**，而 README 承诺了它。
+
+`git mv .claude/hooks/hooks.json hooks/hooks.json`，`claude plugin validate .` 通过。
+
+又是同一族缺陷：**同一个事实在多于一处被独立计算（这里：机制在 A 路径，说明在 B 处），其中一处算错。**前十一轮记了 13 个修复里 7 个是这一族，这是第 8 个。
+
+### README 重写
+
+- 开头改成两个 harness 对称叙述，说明两边根目录各扫一次、缺哪边都只是跳过
+- 安装：Claude Code / Codex / 不用插件，三条路
+- 新增「使用」：从哪开始（`/synapse` / 「打开会话地图」/ 手动开地址）+ 进去之后能干什么
+- 「与 Claude Code 的边界」→「与两个宿主的边界」，加一张 Codex 能力矩阵
+- 补 `CCSYNAPSE_THEME`；开发章节的 92 → **105** 个测试、九轮 → 十一轮（都是会过期的事实，写进文档就得跟着改）
+
+### 验收
+
+- 105 个测试通过；`npm run build` 全绿；`claude plugin validate .` 通过
+- 两个一次性实例：默认 `dark:false`、`CCSYNAPSE_THEME=dark` → `dark:true`；启动横幅同时打印两个会话目录
+- Codex：`codex plugin marketplace add` + `codex plugin add` 成功，`codex exec` 确认技能可见且路径可解析
+- 浏览器：主题 light、无首屏脚本、标题已改、页面正常渲染 173 张卡
