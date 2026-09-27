@@ -793,7 +793,7 @@ getComputedStyle(card, '::after').opacity   // 强制样式重算，与是否绘
 - 浏览器实测：跳转后落点卡 dx/dy = 0；`selected` 1.2s 后仍在，`is-flash` 已消失；被相机新挂载的卡两个标记都有；环的插值曲线与暗色取值如上
 - 明确未做：`定位` 按钮不带闪烁（用户没要；它跳的是同一张卡，改一行就能带上）
 
-## 第十二轮：定位闪烁、默认亮色、Codex 安装（本轮）
+## 第十二轮：定位闪烁、默认亮色、Codex 安装（`d3d507b`）
 
 用户的四条：①切工作区已够用 ②「定位」也带闪烁 ③默认明亮主题 ④确保自动兼容 Claude Code 与 Codex，README 说清装法和用法。
 
@@ -873,3 +873,91 @@ README 原来写着「装了插件的会话里，服务也会在 `SessionStart` 
 - 两个一次性实例：默认 `dark:false`、`CCSYNAPSE_THEME=dark` → `dark:true`；启动横幅同时打印两个会话目录
 - Codex：`codex plugin marketplace add` + `codex plugin add` 成功，`codex exec` 确认技能可见且路径可解析
 - 浏览器：主题 light、无首屏脚本、标题已改、页面正常渲染 173 张卡
+
+## 方案（尚未实施）：压缩（compaction）在画布上的表示
+
+用户问：触发压缩后，画布上是怎么展示的？有没有针对性的优化？——先自查（只写量到的事实），再给方案。**本方案未实施。**
+
+### 自查 · Claude Code（本会话两次压缩，全部为实测）
+
+| 事实 | 证据 |
+|---|---|
+| 边界行 | `type: system` / `subtype: compact_boundary`，content `"Conversation compacted"`，带 `compactMetadata` |
+| 摘要行 | `type: user`，`message.content` 是字符串，**`isCompactSummary: true` 在顶层**（不在 `message` 下面），另有 `isVisibleInTranscriptOnly: true` |
+| 摘要进画布了吗 | 没有。该会话 87 条 user 消息里 0 条是摘要 |
+| 压缩前的轮次还在吗 | 在。投影里 seq 12..6348，其中 **6 条在边界 seq 1290 之前** |
+| 画布上有标记吗 | **没有**。压缩前后是连续的一串卡，看不出模型上下文在这里被砍过 |
+
+现有代码已经正确处理两件事：`userPrompt()` 丢掉摘要（两处拼写都查：`raw.isCompactSummary` 与 `raw.message.isCompactSummary`），`translateLine()` 丢掉边界行并顺带关闭进行中的 assistant 组。
+
+**一句假话已修（`c89160d`）**：日志原写 "pre-compaction turns are not recoverable from the transcript"，与实测相反——那些轮次是 append-only 留在盘上、并且照常投影的。改成带 `compactMetadata` 真实数字的一句：
+
+```
+compaction boundary at seq 1290 (context 352235 → 19812 tokens, manual): the model's context was cut here, the transcript keeps every turn
+```
+
+> 记一次量错：我先只看了 `message.isCompactSummary`（不存在），差点得出「守卫是死的、摘要会变成一张卡」的结论。字段实际在**顶层**。
+
+### 自查 · Codex：本机从未压缩过 → 未验证
+
+当时 15 个 rollout（全库 1557 行），聚合**全部** `type/payload.type` 后：一次压缩都没有。硬试了两次触发（`auto_compact_token_limit=1500` + `resume` 第二回合；token 用量 339 / 695，没到阈值），均失败，原因未知。
+
+能拿到的只有**名字**，来自二进制自己的枚举（与**已实测存在**的 `task_started`、`thread_settings_applied` 在同一张字符串表）：
+
+- 顶层行类型：`compacted`
+- `event_msg` 载荷：`context_compacted`
+
+适配器现状对两者都是安全的：`event_msg` 整类跳过；`compacted` 落进未知类型 → 记一行日志后跳过。不崩、不成卡。
+
+**Codex 自己的 base instructions 里写着**：
+
+> sometimes you may see a summary instead of the full conversation history… treat a turn spanning compactions as one logical chain of events
+
+即压缩会发生在**回合中途**。这一句决定了整个设计——压缩不是轮次边界。
+
+### 算法：压缩不是一轮，但投影模型是一轮一轮的
+
+| 候选 | 判断 |
+|---|---|
+| 当成一轮（一张卡） | 否。伪造一个没人问过的问题，破坏「卡 = 人的提问 + 回答」这个契约 |
+| 挂到后一轮（`card.compactedBefore`） | 否。会话级事件记在某一轮头上；压缩落在会话末尾时直接消失 |
+| **带 seq 的边界标记**（`session/compacted`） | 选它 |
+
+核心理由：**位置是数据，不是推断**。边界行自带行号（= seq 口径），标记天然落在「最后一条压缩前轮次」与「第一条压缩后轮次」之间，不需要任何启发式。
+
+- **幂等白送**：标记带 seq，走 store 现成的 `sourceSeq` 去重，重放与回填天然一致。
+- **元数据白送**：`compactMetadata` 有 `trigger`（manual/auto）、`preTokens`、`postTokens`、`cumulativeDroppedTokens` → 标记可以写「上下文已压缩（手动）· 35.2万 → 2.0万 token」，这才是「模型为什么忘了」的答案。
+- **保留窗口是可验证的数据**：`preservedSegment`（`headUuid`/`anchorUuid`/`tailUuid`）与 `preservedMessages.uuids` 实测映射回行号 1267 / 1292 / 1281——即压缩原样保留的尾部窗口（第一次 10 行、第二次 4 行），`anchorUuid` 就是摘要行本身。
+
+### 架构：三层各加一处，分隔线不进卡片管线
+
+```
+适配器 → 第 5 种投影事件 session/compacted { seq, trigger, pre, post, preservedSeqs? }
+      → store：thread.compactions: number[]（缺席 = 老缓存，走 sourceParentSeq 那条回填路）
+      → 客户端：两卡之间画分隔
+```
+
+客户端的关键决定：**分隔线画进已有的 SVG 连线层**（`canvasConnectors`，世界坐标系，本来就不可拖、不可搜），每个边界一个 `<g>`：竖虚线 + 标签，x 由相邻两卡位置推出——那些位置在同一处已经算好。
+
+不这么做就得付的代价：卡片模型隐含可拖拽、位置写 localStorage、参与 `layoutConversationGraph`、进小地图、进搜索、可折叠；把一个非节点塞进节点管线，每一项都要单独排除。
+
+不用 thread 级布尔的原因：本会话就有**两次**压缩，布尔丢位置；且没有 seq 就无法幂等重放。
+
+### 工程：验证、回填与失败模式
+
+- **真实数据可验**：本会话两个边界的位置是确定的（落在 seq 1290 之后、下一条真实提问之前），不造 fixture 就有正向对照。
+- **变异测试**：删掉标记发射 → 必须红。**反向断言更重要**：合成一个 Codex 压缩 → 断言**没有多出一张卡**、**没有跨轮合并**。
+- **跨轮合并的实测**：两个边界前后 4 行内都没有 assistant 行，**没有任何 `messageId` 跨过边界**——「压缩劈开一条助手消息」在现有语料里没有发生。按 Codex 的说法它会发生在回合中途，但 Codex 的 `turn_id` 是数据、`compacted` 行没有 turn_id，**结构上免疫**；Claude Code 侧若真发生，合并回同一条回答反而与「one logical chain」一致。
+- **唯一会误报的方向**：摘要变成一张卡（模板改名时）。廉价保险：摘要的固定开场白（实测 `This session is being continued from a previous conversation`）**只在日志里报警一次**，不静默过滤——是侦测器，不是猜过滤器。
+- **回填**：老投影缓存没有 `compactions` 字段，复用 store 已有的回填路径。
+- **成本**：每次压缩 O(1)；渲染每边界一个 SVG 元素；不碰 1Hz 热路径。
+
+### 未决与未验证
+
+- **Codex 的 `compacted` / `context_compacted` 识别写不写**：它只会**漏报不会误报**（认不出的类型不画标记），唯一风险是 `context_compacted` 若在压缩失败时也发。倾向写，但代码里标注未验证、README 不写「已支持」——与当初 `codex fork` 血缘同一个标准。
+- **保留窗口的第二增量**：`preservedSeqs` 已经在手上（`uuidLine` Map 现成），可把「原样保留的尾部窗口」画成一段范围而不是一条线。先做线。
+
+### 实施顺序（未开始）
+
+1. **P1 · Claude Code**：标记事件 + store 字段 + 分隔线 + 回填 + 真实语料断言 + 变异测试。
+2. **P2 · Codex**：同一机制，接二进制声明的两个名字，标注未验证。
