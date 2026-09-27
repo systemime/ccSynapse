@@ -7,6 +7,7 @@
 // of mounting onto a host's, because Claude Code exposes no server to mount on.
 
 import { createServer } from 'node:http'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -15,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { WorkspaceStore, InputError, NotFoundError } from './workspace-store.js'
 import { trustSet, rejectStatus } from './trust.js'
 import { TranscriptSource, detectForks } from './transcript.js'
+import { CodexSource } from './codex.js'
 import { createRpcHandler } from './rpc.js'
 import { createRouter, sendJson } from './routes.js'
 
@@ -36,6 +38,8 @@ const config = {
   host: process.env.CCSYNAPSE_HOST ?? '127.0.0.1',
   dataFile: DATA_FILE,
   transcripts: process.env.CCSYNAPSE_PROJECTS ?? join(CLAUDE_HOME, 'projects'),
+  // Codex's own layout: <root>/<YYYY>/<MM>/<DD>/rollout-*.jsonl.
+  codexSessions: process.env.CCSYNAPSE_CODEX_SESSIONS ?? join(homedir(), '.codex', 'sessions'),
   workspaceTitle: process.env.CCSYNAPSE_WORKSPACE_TITLE ?? 'Claude Code 任务',
   // Extra flags for every `claude --bg` spawn, e.g.
   //   CCSYNAPSE_BG_ARGS="--permission-mode acceptEdits"
@@ -46,7 +50,19 @@ const config = {
 }
 
 const store = new WorkspaceStore(config.dataFile)
-const source = new TranscriptSource(config.transcripts)
+const claude = new TranscriptSource(config.transcripts)
+// Both harnesses project onto one canvas. A machine without Codex has no such
+// root, and the adapter already treats an unlistable root as "keep what we had",
+// so a missing directory costs nothing and is never an error.
+const codex = new CodexSource(config.codexSessions)
+
+// One session map for everything above the store — lineage, the live feed, the
+// bridge's cwd/title lookups, /api/reset — so no consumer has to know which
+// adapter read a session, and adding a third harness would touch only this.
+// Rebuilt each cycle rather than merged on read: a consumer can then never see
+// a half-updated view, and each source still owns and prunes its own entries.
+const sessions = new Map()
+const source = { sessions }
 
 // A `claude --bg` fork chooses its own session id (it ignores --session-id), but
 // the canvas needs the id before the first turn is sent, because the client
@@ -85,7 +101,13 @@ async function project() {
   if (projecting) return
   projecting = true
   try {
-    const sessions = await source.sync(store, config.workspaceTitle, toLocal)
+    const claudeSessions = await claude.sync(store, config.workspaceTitle, toLocal)
+    const codexSessions = await codex.sync(store, config.workspaceTitle, toLocal)
+    // No await between the clear and the refill, so a concurrent reader sees
+    // either the previous cycle's map or this one — never an empty one.
+    sessions.clear()
+    for (const [id, session] of claudeSessions) sessions.set(id, session)
+    for (const [id, session] of codexSessions) sessions.set(id, session)
 
     // Every session that legitimately has a parent this run. Anything holding a
     // stored link but missing from this set is stale (see clearLineage below).
@@ -233,6 +255,9 @@ server.listen(config.port, config.host, () => {
   console.log(`ccSynapse 会话地图: http://${config.host}:${port}/`)
   console.log(`  数据文件: ${config.dataFile}`)
   console.log(`  会话目录: ${config.transcripts}`)
+  // Both roots are scanned at startup and a missing one is skipped, never an
+  // error — but say so, because「为什么看不到 Codex 会话」has no other answer.
+  console.log(`  Codex 会话目录: ${config.codexSessions}${existsSync(config.codexSessions) ? '' : '（不存在，已跳过）'}`)
   void projectLoop()
 })
 

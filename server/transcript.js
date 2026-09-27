@@ -13,10 +13,12 @@
 // `getSessionMessages()` returns the *post-compaction* chain, which would erase
 // exactly the per-turn history the canvas exists to show.
 
-import { readdir, readFile, stat, open } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, basename } from 'node:path'
 
-import { MAX_PROJECTION_LENGTH, PROJECTION_TRUNCATED_SUFFIX } from './workspace-store.js'
+// Whatever codex.js also needs lives there, so the two adapters cannot drift
+// apart on how much of a message survives. See projection.js.
+import { clampTool, liveText, readAppended, reportOnce, LIVE_WINDOW_MS } from './projection.js'
 
 // seq is the 0-based line index: monotonic within a file, which is what the
 // store's `sourceSeq` dedup needs to make replay idempotent.
@@ -68,49 +70,6 @@ export function promptText(content) {
     return args === '' ? null : `${name} ${args}`.trim()
   }
   return INJECTED_ONLY.test(text) ? null : text
-}
-
-/** Warning latch: report a given surprise once, not once per line. */
-const reported = new Set()
-function reportOnce(key, detail) {
-  if (reported.has(key)) return
-  reported.add(key)
-  console.warn(`[ccSynapse] transcript: ${detail}`)
-}
-
-// Tool payloads are unbounded on disk: a single Write argument measured 88 KB,
-// and tool records dominated the canvas state file (3.7 MB of 5 MB) — a file the
-// store rewrites in full on every save. Message text is already capped
-// (MAX_PROJECTION_LENGTH in the store); tool records were not, so cap them here.
-// The detail view shows the head, which is what a folded tool record is for.
-const MAX_TOOL_LENGTH = 2_000
-const TOOL_TRUNCATED_SUFFIX = '\n——…（已截断）'
-
-/** Most bytes of one transcript to ingest per poll, so a huge file cannot OOM the server. */
-const MAX_READ_BYTES = 16 * 1024 * 1024
-
-// How recently a transcript must have been written for the group held at its EOF
-// to count as a reply still being written. See `liveText` below.
-const LIVE_WINDOW_MS = 60_000
-
-function clampTool(text) {
-  if (typeof text !== 'string' || text.length <= MAX_TOOL_LENGTH) return text
-  return `${text.slice(0, MAX_TOOL_LENGTH)}${TOOL_TRUNCATED_SUFFIX}`
-}
-
-/**
- * Partial text of the group that is still being written, clamped exactly like a
- * projected message (same cap, same suffix, same trim) so the client can patch
- * it into the card the finished answer will replace without the two disagreeing.
- * Null when there is nothing to show — no open group, or one carrying only
- * thinking / tool_use blocks — because the client renders its own placeholder
- * for that, and an empty string would only churn the DOM once a second.
- */
-function liveText(parts) {
-  const text = parts.join('\n').trim()
-  if (text === '') return null
-  if (text.length <= MAX_PROJECTION_LENGTH) return text
-  return `${text.slice(0, MAX_PROJECTION_LENGTH)}${PROJECTION_TRUNCATED_SUFFIX}`
 }
 
 function textOf(content) {
@@ -357,60 +316,38 @@ export class TranscriptSource {
     return files
   }
 
-  /** @returns {{lines: string[], grew: boolean}} complete lines appended since last call */
+  /**
+   * The read loop itself is shared with codex.js; what is Claude-Code-specific
+   * is what a rewrite invalidates. Every per-file field that is either keyed by
+   * line number or derived from the bytes on disk has to go with the offset: the
+   * rewrite moved every line, so a surviving index points at nothing (or at the
+   * wrong line). `uuidLine` was the one that bit — a prompt left holding its
+   * pre-rewrite parent line resolved to a seq at or past its own, and the card
+   * drew an edge to itself (and a fold button aimed at itself). Kept:
+   * path/sessionId/parentSessionId/toolUseId (identity, not content) and
+   * cwd/title (which session this file belongs to, and what to call it — neither
+   * is a line reference). The store dedups by seq, so replaying already-projected
+   * turns is a no-op.
+   *
+   * @returns {{lines: string[], grew: boolean}} complete lines appended since last call
+   */
   async #readAppended(cache) {
-    let handle
-    try { handle = await open(cache.path, 'r') }
-    catch { return { lines: [], grew: false } }
-    try {
-      const info = await handle.stat()
-      const grew = cache.size === -1 ? true : info.size !== cache.size
-      if (info.size < cache.offset) {
-        // Rewritten or truncated in place. Restart the file; the store dedups by
-        // seq, so replaying already-projected turns is a no-op.
-        reportOnce(`rewrite:${cache.path}`, `transcript rewritten in place, reprojecting: ${cache.path}`)
-        // Every per-file field that is either keyed by line number or derived
-        // from the bytes on disk has to go with the offset: the rewrite moved
-        // every line, so a surviving index points at nothing (or at the wrong
-        // line). `uuidLine` was the one that bit — a prompt left holding its
-        // pre-rewrite parent line resolved to a seq at or past its own, and the
-        // card drew an edge to itself (and a fold button aimed at itself).
-        // Kept: path/sessionId/parentSessionId/toolUseId (identity, not
-        // content) and cwd/title (which session this file belongs to, and what
-        // to call it — neither is a line reference).
-        cache.offset = 0
-        cache.lineCount = 0
-        cache.turn = 0
-        cache.open = null
-        cache.primed = false
-        cache.fingerprint = []
-        cache.turnSeqs = []
-        cache.turnParts = []
-        cache.uuidSet = new Set()
-        cache.uuidLine = new Map()
-        cache.issuedToolCalls = new Set()
-        cache.issuedToolLines = new Map()
-      }
-      cache.size = info.size
-      if (info.size === cache.offset) return { lines: [], grew }
-
-      // Read at most one chunk per poll. Claude Code's own reader carries a
-      // 50 MB cap with the note that session files "can grow to multiple GB",
-      // and this used to allocate the whole remainder in one buffer. A file
-      // larger than the cap simply catches up over several one-second polls;
-      // the partial-line handling below already leaves the offset on a boundary.
-      const length = Math.min(info.size - cache.offset, MAX_READ_BYTES)
-      const buffer = Buffer.allocUnsafe(length)
-      const { bytesRead } = await handle.read(buffer, 0, length, cache.offset)
-      const chunk = buffer.subarray(0, bytesRead).toString('utf8')
-      // Hold a trailing partial line for the next poll rather than parsing it.
-      const lastBreak = chunk.lastIndexOf('\n')
-      if (lastBreak === -1) return { lines: [], grew }
-      cache.offset += Buffer.byteLength(chunk.slice(0, lastBreak + 1), 'utf8')
-      return { lines: chunk.slice(0, lastBreak).split('\n'), grew }
-    } finally {
-      await handle.close()
+    const { lines, grew, reset } = await readAppended(cache.path, cache)
+    if (reset) {
+      reportOnce(`rewrite:${cache.path}`, `transcript rewritten in place, reprojecting: ${cache.path}`)
+      cache.lineCount = 0
+      cache.turn = 0
+      cache.open = null
+      cache.primed = false
+      cache.fingerprint = []
+      cache.turnSeqs = []
+      cache.turnParts = []
+      cache.uuidSet = new Set()
+      cache.uuidLine = new Map()
+      cache.issuedToolCalls = new Set()
+      cache.issuedToolLines = new Map()
     }
+    return { lines, grew }
   }
 
   #flush(cache, out) {
@@ -599,13 +536,14 @@ export class TranscriptSource {
 
       const session = {
         id: mapSessionId(cache.sessionId),
+        harness: 'claude-code',
         title: cache.title,
         header: { cwd: cache.cwd },
         firstLiveSeq: 0,
         events,
       }
       this.sessions.set(cache.sessionId, {
-        id: cache.sessionId, cwd: cache.cwd, title: cache.title, mtimeMs: info.mtimeMs,
+        id: cache.sessionId, harness: 'claude-code', cwd: cache.cwd, title: cache.title, mtimeMs: info.mtimeMs,
         fingerprint: cache.fingerprint, turnSeqs: cache.turnSeqs, lastSeq: cache.lineCount,
         uuidSet: cache.uuidSet,
         uuidLine: cache.uuidLine,

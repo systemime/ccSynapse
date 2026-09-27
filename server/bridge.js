@@ -16,9 +16,14 @@
 //   3. `--bg` refuses to run in a directory the user has not trusted in Claude
 //      Code, so a branch can fail with "Workspace not trusted"; that message is
 //      surfaced verbatim because it is the only actionable thing to say.
+//
+// Codex sessions are read-only here: none of the `--bg` machinery applies to
+// them (a Codex branch is a separate work unit). The one thing they share is
+// `openInTerminal`, which needs a real `codex` executable to hand a terminal —
+// hence `codexBinary` below, the twin of `claudeBinary`.
 
 import { spawn } from 'node:child_process'
-import { accessSync, constants } from 'node:fs'
+import { accessSync, constants, readdirSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -29,6 +34,7 @@ const SHIM_EXTENSIONS = ['.cmd', '.bat', '.ps1']
 const SHORT_ID_PATTERN = /backgrounded\s*[·:]\s*([0-9a-f]{6,})/i
 
 let cachedBinary
+let cachedCodexBinary
 
 function executableAt(path) {
   if (SHIM_EXTENSIONS.some(extension => path.toLowerCase().endsWith(extension))) return false
@@ -55,6 +61,70 @@ export function claudeBinary() {
     }
   }
   return (cachedBinary = null)
+}
+
+/**
+ * Locate a spawnable `codex`, probed exactly like `claude` above and with the
+ * same two rules: a real executable, never npm's extensionless shim.
+ *
+ * Measured on this machine, because the obvious scan does not find it: PATH
+ * holds `<npm prefix>/codex` (a shell script, which spawns as ENOENT) and its
+ * .cmd/.ps1 twins, while the real binary sits under two variable names —
+ * platform-arch and a target triple — that cannot be written down:
+ *
+ *   <npm prefix>/node_modules/@openai/codex/node_modules/
+ *     @openai/codex-<platform>-<arch>/vendor/<triple>/bin/codex.exe
+ *
+ * So the flat PATH scan covers other install methods (scoop, winget, brew) and
+ * the vendor walk is the one that hits here. On Windows only `.exe` counts,
+ * for the reason above. CCSYNAPSE_CODEX_BIN skips both.
+ */
+export function codexBinary() {
+  if (cachedCodexBinary !== undefined) return cachedCodexBinary
+  const override = process.env.CCSYNAPSE_CODEX_BIN
+  if (override) return (cachedCodexBinary = override)
+  const names = IS_WINDOWS ? ['codex.exe'] : ['codex']
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (directory === '') continue
+    for (const name of names) {
+      const candidate = join(directory, name)
+      if (executableAt(candidate)) return (cachedCodexBinary = candidate)
+    }
+    for (const candidate of vendorCodexBinaries(directory)) {
+      if (executableAt(candidate)) return (cachedCodexBinary = candidate)
+    }
+  }
+  return (cachedCodexBinary = null)
+}
+
+/** The `<vendor>/<triple>/bin/codex.exe` paths under one npm prefix. */
+function vendorCodexBinaries(prefix) {
+  // node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/<triple>/bin
+  // — the platform package is scoped, so it sits one level below the scope
+  // directory rather than directly in node_modules.
+  const packages = join(prefix, 'node_modules', '@openai', 'codex', 'node_modules')
+  let vendors
+  try { vendors = readdirSync(packages, { withFileTypes: true }) } catch { return [] }
+  const roots = []
+  for (const vendor of vendors) {
+    if (!vendor.isDirectory()) continue
+    if (!vendor.name.startsWith('@')) { roots.push(join(packages, vendor.name)); continue }
+    const scope = join(packages, vendor.name)
+    let scoped
+    try { scoped = readdirSync(scope, { withFileTypes: true }) } catch { continue }
+    for (const entry of scoped) if (entry.isDirectory()) roots.push(join(scope, entry.name))
+  }
+
+  const found = []
+  for (const root of roots) {
+    const triples = join(root, 'vendor')
+    let targets
+    try { targets = readdirSync(triples, { withFileTypes: true }) } catch { continue }
+    for (const target of targets) {
+      if (target.isDirectory()) found.push(join(triples, target.name, 'bin', IS_WINDOWS ? 'codex.exe' : 'codex'))
+    }
+  }
+  return found
 }
 
 /**
@@ -158,21 +228,30 @@ async function startBackground({ args, cwd, forked = false, extraArgs = [] }) {
 /**
  * Open a session in a real terminal, where its tool approvals can actually be
  * answered. Prefers Windows Terminal; falls back to a plain cmd window.
+ *
+ * `harness` picks the CLI that can resume the session at all: a Codex rollout
+ * has no Claude Code transcript, so `claude --resume` on one would open a second,
+ * empty session under a borrowed id. Claude Code stays the default, and its
+ * command line is unchanged.
  */
-export function openInTerminal({ sessionId, cwd }) {
+export function openInTerminal({ sessionId, cwd, harness }) {
   if (process.env.CCSYNAPSE_NO_TERMINAL === '1') return { opened: false, reason: 'disabled' }
   const directory = cwd ?? process.cwd()
+  const codex = harness === 'codex'
+  const command = codex ? codexBinary() : 'claude'
+  if (command === null) return { opened: false, reason: '找不到可执行的 codex：请设置 CCSYNAPSE_CODEX_BIN 指向原生可执行文件' }
+  const resume = codex ? ['resume', sessionId] : ['--resume', sessionId]
   const terminal = (process.env.PATH ?? '').split(delimiter)
     .map(entry => join(entry, 'wt.exe'))
     .find(executableAt)
   try {
     if (terminal !== undefined) {
-      spawn(terminal, ['-w', '0', 'new-tab', '--startingDirectory', directory, 'claude', '--resume', sessionId],
+      spawn(terminal, ['-w', '0', 'new-tab', '--startingDirectory', directory, command, ...resume],
         { detached: true, stdio: 'ignore', windowsHide: false }).unref()
       return { opened: true, via: 'wt' }
     }
     const shell = process.env.ComSpec ?? 'cmd.exe'
-    spawn(shell, ['/c', 'start', '', 'cmd', '/k', 'claude', '--resume', sessionId], { cwd: directory, detached: true, stdio: 'ignore' }).unref()
+    spawn(shell, ['/c', 'start', '', 'cmd', '/k', command, ...resume], { cwd: directory, detached: true, stdio: 'ignore' }).unref()
     return { opened: true, via: 'cmd' }
   } catch (error) {
     return { opened: false, reason: error instanceof Error ? error.message : String(error) }

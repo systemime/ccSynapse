@@ -483,6 +483,11 @@ export class WorkspaceStore {
   dshThread(workspace, session) {
     let thread = workspace.threads.find(item => item.dshSessionId === session.id)
     if (thread !== undefined) {
+      // ccSynapse: backfill the harness for a thread recorded before the field
+      // existed. `??=` on purpose — `applyLineage` replays a session header that
+      // carries no harness at all, and a value re-derived on every pass would
+      // relabel a Codex thread as Claude Code the first time it got a parent.
+      thread.harness ??= harnessOf(session)
       if (typeof session.title === 'string' && session.title.trim() !== '') {
         const title = session.title.slice(0, MAX_TITLE_LENGTH)
         thread.title = title
@@ -511,11 +516,14 @@ export class WorkspaceStore {
     const now = new Date().toISOString()
     thread = {
       id: randomUUID(),
-      title: typeof session.title === 'string' && session.title.trim() !== '' ? session.title.slice(0, MAX_TITLE_LENGTH) : (parent === undefined ? 'Claude Code 会话' : `${parent.title} 分支`),
+      title: typeof session.title === 'string' && session.title.trim() !== '' ? session.title.slice(0, MAX_TITLE_LENGTH) : (parent === undefined ? `${HARNESS_LABEL[harnessOf(session)]} 会话` : `${parent.title} 分支`),
       parentId: parent?.id ?? null,
       sourceParentSessionId: parentSessionId,
       sourceSeedLength: Number.isSafeInteger(session.header?.seedLength) && session.header.seedLength >= 0 ? session.header.seedLength : null,
       dshSessionId: session.id,
+      // ccSynapse: which harness the session came from, so the canvas can name
+      // it. Probed at creation; see the backfill in the update path above.
+      harness: harnessOf(session),
       dshSessionTitle: typeof session.title === 'string' ? session.title.slice(0, MAX_TITLE_LENGTH) : null,
       color: TOPIC_COLORS[workspace.threads.length % TOPIC_COLORS.length],
       // DSH projection stores only a neutral semantic anchor. The visual map
@@ -907,6 +915,20 @@ function fillMessageShape(message, shape) {
   markMessageShape(message, shape)
   if (shape.thinking > (message.thinking ?? 0)) message.thinking = shape.thinking
 }
+
+/**
+ * ccSynapse: which harness a projected session came from.
+ *
+ * Absent means Claude Code — every thread recorded before this field existed is
+ * one, and the Claude Code adapter is the one that always sent a session. Only
+ * `codex` is asked about, so an unknown value degrades to the default rather
+ * than to a blank label.
+ */
+function harnessOf(session) {
+  return session.harness === 'codex' ? 'codex' : 'claude-code'
+}
+
+const HARNESS_LABEL = { 'claude-code': 'Claude Code', codex: 'Codex' }
 
 function titleFromText(text) {
   const line = text.replaceAll(/\s+/g, ' ').trim()

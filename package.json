@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "build": "node --check server/index.js && node --check server/transcript.js && node --check server/bridge.js && node --check server/workspace-store.js && node --check web/app.js",
+    "build": "node --check server/index.js && node --check server/transcript.js && node --check server/codex.js && node --check server/projection.js && node --check server/bridge.js && node --check server/workspace-store.js && node --check web/app.js",
     "test": "node --test test/*.test.js"
   },
   "license": "MIT",

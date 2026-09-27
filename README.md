@@ -2,6 +2,8 @@
 
 Claude Code 的可视化会话地图。把同一工作目录下的会话、追问、分支和子代理投影成一张可拖拽、可缩放的画布，并且可以从画布上直接发起分支。
 
+Codex 的会话（`~/.codex/sessions`）也读进同一张画布，卡片上标出它来自哪个 harness；Codex 侧目前是**只读**的——从画布分支/继续只对 Claude Code 会话开放。
+
 是 [dsh-synapse](https://github.com/liangmianya/dsh-synapse)（DeepSeek Harness 的会话地图插件）在 Claude Code 上的移植。
 
 ## 它做什么
@@ -49,9 +51,11 @@ node server/index.js
 | `CCSYNAPSE_PORT` | `3080` | 监听端口 |
 | `CCSYNAPSE_HOST` | `127.0.0.1` | 监听地址 |
 | `CCSYNAPSE_HOME` | `$CLAUDE_PLUGIN_DATA` → `~/.claude/synapse` | 画布元数据目录 |
-| `CCSYNAPSE_PROJECTS` | `~/.claude/projects` | 会话记录目录 |
+| `CCSYNAPSE_PROJECTS` | `~/.claude/projects` | Claude Code 会话记录目录 |
+| `CCSYNAPSE_CODEX_SESSIONS` | `~/.codex/sessions` | Codex rollout 目录；不存在就跳过，不算错误 |
 | `CCSYNAPSE_BG_ARGS` | 空 | 每次 `claude --bg` 追加的参数，见下方「后台会话的权限」 |
 | `CCSYNAPSE_CLAUDE_BIN` | 自动探测 | `claude` 可执行文件路径 |
+| `CCSYNAPSE_CODEX_BIN` | 自动探测 | `codex` 可执行文件路径（仅用于「终端」按钮） |
 | `CCSYNAPSE_TRUSTED_HOSTS` | 空 | 额外允许的 Host（局域网访问时填写） |
 
 ### 两个数据文件，删除的后果不同

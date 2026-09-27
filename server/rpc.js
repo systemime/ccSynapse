@@ -44,8 +44,8 @@ export function createRpcHandler({ source, aliases, locals, pendingForks, active
       }
       case 'synapse:open-session': {
         const real = toReal(body.sessionId)
-        const cwd = source.sessions.get(real)?.cwd
-        const result = bridge.openInTerminal({ sessionId: real, cwd })
+        const record = source.sessions.get(real)
+        const result = bridge.openInTerminal({ sessionId: real, cwd: record?.cwd, harness: record?.harness })
         if (result.opened !== true) reply({ type: 'synapse:bridge-error', requestId: body.requestId, message: `无法打开终端：${result.reason}` })
         break
       }
@@ -53,6 +53,12 @@ export function createRpcHandler({ source, aliases, locals, pendingForks, active
         const parentReal = toReal(body.sessionId)
         const record = source.sessions.get(parentReal)
         if (record === undefined) { reply({ type: 'synapse:bridge-error', requestId: body.requestId, message: '找不到要分支的会话，请稍后重试' }); break }
+        // Continuing or branching a Codex session needs `codex exec`/`codex fork`
+        // plus its own id discovery and lineage recording — a separate work unit.
+        // Until then, say so: `claude --resume` on a rollout's id would spawn a
+        // second, empty Claude Code session under a borrowed id, and the canvas
+        // would draw a branch card that never fills.
+        if (record.harness === 'codex') { reply({ type: 'synapse:bridge-error', requestId: body.requestId, message: 'Codex 会话暂不支持从画布分支' }); break }
         const placeholder = randomUUID()
         pendingForks.set(placeholder, { parentSessionId: parentReal, cwd: record.cwd, title: record.title, seedLength: record.lastSeq ?? 0 })
         reply({ type: 'synapse:forked-session', requestId: body.requestId, session: { id: placeholder, title: `${record.title ?? '会话'} 分支`, cwd: record.cwd } })
@@ -63,9 +69,14 @@ export function createRpcHandler({ source, aliases, locals, pendingForks, active
         if (text.trim() === '') { reply({ type: 'synapse:bridge-error', requestId: body.requestId, message: '消息不能为空' }); break }
         const local = body.sessionId
         const pending = pendingForks.get(local)
+        const record = pending === undefined ? source.sessions.get(toReal(local)) : undefined
+        if (pending === undefined && record?.harness === 'codex') {
+          reply({ type: 'synapse:bridge-error', requestId: body.requestId, message: 'Codex 会话暂不支持从画布继续' })
+          break
+        }
         try {
           const result = pending === undefined
-            ? await bridge.continueSession({ sessionId: toReal(local), text, cwd: source.sessions.get(toReal(local))?.cwd, extraArgs: config.backgroundArgs })
+            ? await bridge.continueSession({ sessionId: toReal(local), text, cwd: record?.cwd, extraArgs: config.backgroundArgs })
             : await bridge.forkSession({ sessionId: pending.parentSessionId, text, cwd: pending.cwd, extraArgs: config.backgroundArgs })
           if (result.sessionId !== null) {
             if (pending !== undefined) {
