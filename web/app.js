@@ -2213,10 +2213,20 @@ function handleHostMessage(data) {
     else if (canReplaceView()) render()
   }
   if (data.type === 'synapse:live-reply' && typeof data.sessionId === 'string') {
-    const thread = state.workspace?.threads.find(item => item.dshSessionId === data.sessionId)
-    if (thread !== undefined) {
+    // The map follows what the SERVER reports, never which workspace is on
+    // screen. Behind a "the thread is in this workspace" gate, a session that
+    // ends while another workspace is open kept its entry: the end signal was
+    // dispatched, found no thread here, and was dropped. It stayed with
+    // running:true and a partial text, and conversationCards injected that text
+    // as the answer of the next question. Setting is unconditional for the same
+    // reason: switch to the workspace a reply is streaming in and its partial
+    // text is already there.
+    if (data.running === true) state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
+    else state.liveReplies.delete(data.sessionId)
+    // Only a session that has a card in the current workspace has anything to
+    // repaint; the state above is already correct either way.
+    if (state.workspace?.threads.some(item => item.dshSessionId === data.sessionId)) {
       if (data.running === true) {
-        state.liveReplies.set(data.sessionId, { running: true, text: typeof data.text === 'string' ? data.text : '' })
         // Streaming: patch the live card's answer in place instead of
         // rebuilding the whole canvas on every chunk; a full render reconciles
         // at stream end. The detail view is single-thread, so keep its cheap
@@ -2224,7 +2234,6 @@ function handleHostMessage(data) {
         if (state.mode === 'canvas') scheduleLiveCardUpdate(data.sessionId)
         else if (canReplaceView()) scheduleLiveRender()
       } else {
-        state.liveReplies.delete(data.sessionId)
         // A poll can end several sessions at once (the first tick after a
         // restart reports every session that was mid-reply as ended, and the
         // turn now lives in the store). One full render per session froze the
@@ -2341,20 +2350,20 @@ function scheduleLiveRefresh() {
     else void reload.catch(setError)
   }, 120)
 }
-// Sessions the server reported as still generating on the previous tick, so a
-// session that stops appearing can be told `running: false` — otherwise its card
-// keeps the「正在回复」placeholder forever.
-let liveSessions = new Set()
 async function pollLiveReplies() {
   const { sessions } = await api('/api/live')
   const next = new Set(Object.keys(sessions))
   for (const [sessionId, text] of Object.entries(sessions)) {
     handleHostMessage({ type: 'synapse:live-reply', sessionId, running: true, text })
   }
-  for (const sessionId of liveSessions) {
+  // Whatever the map holds and this tick does not report has stopped generating,
+  // so it is told `running: false` — otherwise its card keeps the「正在回复」
+  // placeholder forever. The map is the whole record of what the server last
+  // reported (it is written only from here), so diffing against it cannot drift
+  // the way a second set updated by hand could.
+  for (const sessionId of [...state.liveReplies.keys()]) {
     if (!next.has(sessionId)) handleHostMessage({ type: 'synapse:live-reply', sessionId, running: false })
   }
-  liveSessions = next
 }
 async function pollProjection() {
   if (polling || document.hidden || !canReplaceView()) return
