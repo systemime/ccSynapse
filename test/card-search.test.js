@@ -49,4 +49,8 @@ test('hit markup escapes question and answer payloads', async () => {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/)
   assert.match(html, /data-hit-index="0"/)
   assert.match(html, /class="card-search-hit active"/)
+  // The input's aria-activedescendant points at this id, so a screen reader
+  // learns which result the arrow keys landed on. Renaming one without the
+  // other breaks the announcement silently.
+  assert.match(html, /id="card-search-hit-0"/)
 })

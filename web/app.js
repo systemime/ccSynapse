@@ -1003,7 +1003,7 @@ function cardSearchHits(cards, query) {
 }
 
 function cardSearchHitHtml(hit, index, active) {
-  return `<div class="card-search-hit${active ? ' active' : ''}" role="option" aria-selected="${active}" data-hit-index="${index}"><strong>${escapeHtml(hit.question)}</strong><span><i>${escapeHtml(hit.where)}</i>${escapeHtml(hit.snippet)}</span></div>`
+  return `<div class="card-search-hit${active ? ' active' : ''}" id="card-search-hit-${index}" role="option" aria-selected="${active}" data-hit-index="${index}"><strong>${escapeHtml(hit.question)}</strong><span><i>${escapeHtml(hit.where)}</i>${escapeHtml(hit.snippet)}</span></div>`
 }
 
 function canvasConnectors(cards) {
@@ -1051,7 +1051,11 @@ function conversationCard(card, graph) {
     const isPending = card.dshSessionId != null && state.pendingReplies.has(card.dshSessionId)
     const selected = card.id === state.selectedCardId ? ' selected' : ''
     const label = isPending ? `等待回复（第 ${card.turnIndex + 1} 轮）` : `等待助手（第 ${card.turnIndex + 1} 轮）`
-    return `<article class="thread-card card--pending-dot${selected}" data-card-id="${escapeHtml(card.id)}" data-drag-card="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
+    // role=button, not <button>: the dot keeps its own click path (the
+    // delegated card handler opens the inspector), and the Enter/Space handler
+    // below clicks it. No data-action, or the delegated handler would read the
+    // click as a button action instead of a card click.
+    return `<article class="thread-card card--pending-dot${selected}" role="button" tabindex="0" data-card-id="${escapeHtml(card.id)}" data-drag-card="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
   }
   const selected = card.id === state.selectedCardId ? 'selected' : ''
   const source = card.parentId === null ? 'Claude Code 会话' : card.turnIndex === 0 ? 'Claude Code 分支' : '追问'
@@ -1063,7 +1067,7 @@ function conversationCard(card, graph) {
   const foldLabel = collapsed ? '展开后续对话' : '折叠后续对话'
   const foldButton = childCount === 0 || card.canContinue === true ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
   const branchButton = childCount === 0 || card.canContinue === true || !Number.isInteger(card.answer?.sourceSeq) ? '' : `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>`
-  return `<article class="thread-card ${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6">
+  return `<article class="thread-card ${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6"${card.answer?.pending === true ? ' aria-busy="true"' : ''}>
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
     ${continueButton}${foldButton}${branchButton}
     <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
@@ -1462,9 +1466,9 @@ function render() {
   const view = state.mode === 'thread' ? renderThread() : renderCanvas()
   const choices = workspaceChoices()
   const selectedWorkspaceId = state.selectedDshWorkspaceId ?? workspace?.id
-  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点" aria-label="整理节点"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>整理</button><button data-action="focus-active" title="定位到当前会话" aria-label="定位到当前会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2.6M8 11.9v2.6M1.5 8h2.6M11.9 8h2.6"/></svg>定位</button><button data-action="fit-all" title="缩放到全览" aria-label="缩放到全览">全览</button><button data-action="zoom-out" aria-label="缩小" title="缩小"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 8h9"/></svg></button><span>${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大" title="放大"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><button data-action="search-cards" title="搜索卡片（Ctrl+K）" aria-label="搜索卡片"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>搜索</button></div>` : ''
+  const canvasControls = state.mode === 'canvas' && (threads.length > 0 || state.draft?.kind === 'new') ? `<div class="canvas-controls"><button data-action="layout" title="整理节点" aria-label="整理节点"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/></svg>整理</button><button data-action="focus-active" title="定位到当前会话" aria-label="定位到当前会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.5v2.6M8 11.9v2.6M1.5 8h2.6M11.9 8h2.6"/></svg>定位</button><button data-action="fit-all" title="缩放到全览" aria-label="缩放到全览">全览</button><button data-action="zoom-out" aria-label="缩小" title="缩小"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.5 8h9"/></svg></button><span aria-label="缩放比例">${Math.round(state.zoom * 100)}%</span><button data-action="zoom-in" aria-label="放大" title="放大"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></button><button data-action="search-cards" title="搜索卡片（Ctrl+K）" aria-label="搜索卡片" aria-expanded="${searchEl.hidden ? 'false' : 'true'}"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>搜索</button></div>` : ''
   const detailAvailable = currentThread() !== null
-  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
+  const canvasTabs = `<nav class="canvas-tabs" aria-label="会话地图视图"><button class="${state.mode === 'canvas' ? 'active' : ''}" data-action="show-canvas" aria-pressed="${state.mode === 'canvas'}">地图</button><button class="${state.mode === 'thread' ? 'active' : ''}" data-action="show-thread" data-thread="${state.activeId ?? ''}" aria-pressed="${state.mode === 'thread'}" ${detailAvailable ? '' : 'disabled'}>详情</button></nav>`
   const archivedSection = state.archivedSessionIds.length === 0 ? '' : `<div class="sidebar-heading"><span>已归档</span></div><nav class="thread-tree">${state.archivedSessionIds.map(id => `<div class="tree-row" role="button" tabindex="0" data-action="unarchive-session" data-session="${escapeHtml(id)}" title="恢复此会话"><span class="tree-dot"></span><span class="tree-label">${escapeHtml(id.slice(0, 8))}…</span><i>恢复</i></div>`).join('')}</nav>`
   app.innerHTML = `<main class="synapse-shell ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}"><aside class="sidebar"><div class="sidebar-brand-row"><div class="brand" aria-label="Synapse"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none"><path d="M9 10.5 16 7l7 3.5M9 10.5v8L16 22m0-15v15m7-11.5v8L16 22"/><circle cx="9" cy="10" r="2.5"/><circle cx="23" cy="10" r="2.5"/><circle cx="16" cy="23" r="2.5"/></svg><strong>Synapse</strong></div><button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-label="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}" title="${state.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.25"/><path d="M6 2v12"/></svg></button></div><button class="new-workspace" type="button" data-action="create-session" ${state.draft !== null ? 'disabled' : ''}><svg class="new-session-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v6.5M4.75 8h6.5"/></svg><span>新会话</span></button><label class="workspace-label"><span>工作区</span><span class="workspace-select"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2.5 4.75h3l1.2 1.5h6.8v5.5a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/></svg><select data-action="select-workspace" aria-label="选择工作区" ${state.draft !== null ? 'disabled' : ''}>${choices.map(item => `<option value="${item.id}" title="${escapeHtml(item.path ?? item.title)}" ${item.id === selectedWorkspaceId ? 'selected' : ''}>${escapeHtml(item.title)}</option>`).join('')}</select></span></label><div class="sidebar-heading"><span>会话</span></div><nav class="thread-tree">${renderThreadTree(threads)}</nav>${archivedSection}</aside><header class="topbar"><div class="view-switch" role="group" aria-label="视图切换"><button data-action="show-thread" data-thread="${state.activeId ?? currentThread()?.id ?? ''}" type="button" ${detailAvailable ? '' : 'disabled'} aria-pressed="${state.mode === 'thread' ? 'true' : 'false'}">对话</button><button class="${state.mode === 'canvas' ? 'active' : ''}" type="button" aria-pressed="${state.mode === 'canvas' ? 'true' : 'false'}" data-action="show-canvas">会话地图</button></div>${canvasControls}</header><section class="main-stage">${state.error ? `<div class="status-message" role="alert"><span>${escapeHtml(state.error)}</span><button data-action="dismiss-error" aria-label="关闭" title="关闭">×</button></div>` : ''}${canvasTabs}${view}${selectionFollowupButton()}</section></main>`
   installDragging()
@@ -1696,7 +1700,13 @@ const minimapEl = document.createElement('canvas')
 minimapEl.className = 'minimap'
 minimapEl.width = 160
 minimapEl.height = 100
-minimapEl.setAttribute('aria-hidden', 'true')
+// Operable, not decorative: it is the one overview affordance on a canvas that
+// can hold hundreds of cards, so it takes focus and pans with the arrow keys
+// (the pointer handler's equivalent). role=img is the closest match for a
+// canvas that draws a picture; the label says how to drive it.
+minimapEl.tabIndex = 0
+minimapEl.setAttribute('role', 'img')
+minimapEl.setAttribute('aria-label', '画布缩略图，方向键平移视图')
 minimapEl.hidden = true
 document.body.appendChild(minimapEl)
 
@@ -1737,7 +1747,12 @@ function renderMinimap() {
   const { scale, ox, oy } = t
   const dark = document.documentElement.dataset.theme === 'dark'
   ctx.clearRect(0, 0, W, H)
-  ctx.fillStyle = dark ? 'rgba(91,141,239,.55)' : 'rgba(52,120,246,.45)'
+  // The card mass carries information ("where is the content"), so it needs the
+  // 3:1 non-text ratio against the panel it is drawn on. Measured on the
+  // rendered canvas: .45 was 1.76:1 light, .55 was 2.56:1 dark, and .72 — the
+  // obvious step up — still only reached 2.56:1 over the panel's own tint, so
+  // the light fill needs to be nearly opaque to clear the bar.
+  ctx.fillStyle = dark ? 'rgba(91,141,239,.8)' : 'rgba(52,120,246,.88)'
   for (const card of state.canvasCards) {
     const x = card.position.x * scale + ox
     const y = card.position.y * scale + oy
@@ -1797,6 +1812,23 @@ minimapEl.addEventListener('pointerdown', event => {
   }
   minimapEl.addEventListener('pointermove', move)
   minimapEl.addEventListener('pointerup', stop)
+})
+
+// Keyboard equivalent of the pointer pan: one keypress moves the view by half a
+// viewport in that direction, which is the coarse "get me over there" gesture
+// the minimap is for. 定位/全览 remain the precise jumps.
+minimapEl.addEventListener('keydown', event => {
+  const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key]
+  const viewport = step === undefined ? null : document.querySelector('.canvas-viewport')
+  if (!(viewport instanceof HTMLElement)) return
+  event.preventDefault()
+  const bounds = viewport.getBoundingClientRect()
+  state.canvasCamera = {
+    x: state.canvasCamera.x - step[0] * bounds.width / 2,
+    y: state.canvasCamera.y - step[1] * bounds.height / 2,
+  }
+  applyCanvasTransform()
+  syncCanvasViewport()
 })
 
 // Cards may be unmounted (outside the viewport), so the camera target always
@@ -1969,7 +2001,7 @@ app.addEventListener('dblclick', event => {
 const searchEl = document.createElement('div')
 searchEl.className = 'card-search'
 searchEl.hidden = true
-searchEl.innerHTML = '<div class="card-search-panel" role="dialog" aria-modal="true" aria-label="搜索卡片"><div class="card-search-field"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input class="card-search-input" type="text" placeholder="搜索提问与回答" aria-label="搜索提问与回答" autocomplete="off"></div><p class="card-search-status" role="status"></p><div class="card-search-results" role="listbox" aria-label="搜索结果"></div></div>'
+searchEl.innerHTML = '<div class="card-search-panel" role="dialog" aria-modal="true" aria-label="搜索卡片"><div class="card-search-field"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input class="card-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="card-search-results" aria-autocomplete="list" placeholder="搜索提问与回答" aria-label="搜索提问与回答" autocomplete="off"></div><p class="card-search-status" role="status"></p><div class="card-search-results" id="card-search-results" role="listbox" aria-label="搜索结果"></div></div>'
 document.body.appendChild(searchEl)
 const searchInput = searchEl.querySelector('.card-search-input')
 const searchStatus = searchEl.querySelector('.card-search-status')
@@ -1984,18 +2016,44 @@ function paintCardSearch() {
     : searchHits.length === 0 ? '无结果'
     : `${searchHits.length} 条结果 · ↑↓ 选择，Enter 跳转，Esc 关闭`
   searchList.innerHTML = searchHits.map((hit, index) => cardSearchHitHtml(hit, index, index === searchActive)).join('')
+  // The arrow keys move searchActive, not DOM focus, so the highlighted row is
+  // the input's active descendant — without it a screen reader reads the result
+  // count and nothing about which result ↑↓ landed on.
+  if (searchHits.length === 0) searchInput.removeAttribute('aria-activedescendant')
+  else searchInput.setAttribute('aria-activedescendant', `card-search-hit-${searchActive}`)
+}
+
+// Where focus goes when the overlay closes: back to what opened it. The trigger
+// lives inside #app, which render() rebuilds, so a closed-over element may
+// already be detached by then — re-query it by role in that case.
+let searchReturnFocus = null
+function restoreSearchFocus() {
+  const target = searchReturnFocus
+  searchReturnFocus = null
+  if (target !== null && target.isConnected) target.focus()
+  else document.querySelector('[data-action="search-cards"]')?.focus()
+}
+
+// The trigger is rebuilt by every render(), so its expanded state is written in
+// the render template AND here, at the moment the overlay actually toggles.
+function syncSearchTrigger() {
+  document.querySelector('[data-action="search-cards"]')?.setAttribute('aria-expanded', String(!searchEl.hidden))
 }
 
 function openCardSearch() {
+  // body/documentElement are "nothing was focused", not a place to return to.
+  const focused = document.activeElement
+  searchReturnFocus = focused instanceof HTMLElement && focused !== document.body && focused !== document.documentElement ? focused : null
   searchEl.hidden = false
   searchInput.value = ''
   searchHits = []
   searchActive = 0
   paintCardSearch()
   searchInput.focus()
+  syncSearchTrigger()
 }
 
-function closeCardSearch() {
+function closeCardSearch({ restoreFocus = true } = {}) {
   if (searchFrame !== 0) {
     window.cancelAnimationFrame(searchFrame)
     searchFrame = 0
@@ -2005,6 +2063,8 @@ function closeCardSearch() {
   searchHits = []
   searchList.innerHTML = ''
   searchStatus.textContent = ''
+  syncSearchTrigger()
+  if (restoreFocus) restoreSearchFocus()
 }
 
 // One frame per keystroke, not one rebuild per keystroke: search runs over every
@@ -2037,10 +2097,15 @@ function activateCardSearch(index = searchActive) {
   revealConversationThread(cards, card.dshThreadId)
   state.selectedCardId = hit.cardId
   state.mode = 'canvas'
-  closeCardSearch()
+  // render() rebuilds the trigger, so the return trip is not to the keyboard
+  // shortcut but to the card the Enter just jumped to.
+  closeCardSearch({ restoreFocus: false })
   render()
   const target = state.canvasCardsById?.get(hit.cardId)
   if (target !== undefined) centerCanvasOnCard(target)
+  const landed = document.querySelector('.thread-card.selected .thread-title')
+  if (landed instanceof HTMLElement) landed.focus()
+  else restoreSearchFocus()
 }
 
 searchInput.addEventListener('input', queueCardSearch)
@@ -2064,7 +2129,15 @@ document.addEventListener('keydown', event => {
     return
   }
   if (searchEl.hidden) return
-  if (event.key === 'Escape') closeCardSearch()
+  // aria-modal promises a focus trap, and Tab is the key that keeps it honest.
+  // Today the input is the overlay's only focusable element, but the cycle is
+  // written for n so adding one later cannot escape on the first press.
+  if (event.key === 'Tab') {
+    const focusable = [...searchEl.querySelectorAll('input, button')].filter(el => !el.disabled)
+    const index = focusable.indexOf(document.activeElement)
+    const step = event.shiftKey ? -1 : 1
+    focusable[(index === -1 ? 0 : index + step + focusable.length) % focusable.length].focus()
+  } else if (event.key === 'Escape') closeCardSearch()
   else if (event.key === 'ArrowDown') moveCardSearch(1)
   else if (event.key === 'ArrowUp') moveCardSearch(-1)
   else if (event.key === 'Enter') activateCardSearch()
@@ -2084,7 +2157,18 @@ document.addEventListener('keydown', event => {
   // real button's Enter/Space activation for free.
   if (event.key !== 'Enter' && event.key !== ' ') return
   const target = event.target instanceof Element ? event.target.closest('[data-action][role="button"]') : null
-  if (target instanceof HTMLElement) { event.preventDefault(); target.click() }
+  if (target instanceof HTMLElement) { event.preventDefault(); target.click(); return }
+  // The pending dot is also a role=button, but its activation is the card click
+  // (inspector), which the delegated handler owns.
+  const dot = event.target instanceof Element ? event.target.closest('.card--pending-dot[role="button"]') : null
+  if (dot instanceof HTMLElement) {
+    event.preventDefault()
+    // A keypress has no pointer gesture, and the card handler reads the stale
+    // pointer-down position to tell a click from a drag: a mouse click made
+    // anywhere else earlier would look like a 500px drag.
+    pointerDownPosition = null
+    dot.click()
+  }
 })
 
 app.addEventListener('click', async event => {

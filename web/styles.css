@@ -66,7 +66,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
    segment cover the row's 4px vertical padding, joining into one continuous line. */
 .tree-indent-spacer { flex: none; width: var(--tree-indent, 0); align-self: stretch; margin: -4px 0; background-image: repeating-linear-gradient(to right, var(--tree-guide, #e5e7eb) 0 1px, transparent 1px 10px); background-position: 7px 0; }
 .tree-arrow-gap { flex: none; width: 14px; }
-.tree-arrow { flex: none; width: 14px; height: 14px; padding: 0; border: 0; background: transparent; color: #94a3b8; font-size: 9px; line-height: 14px; text-align: center; cursor: pointer; border-radius: 3px; transition: transform 120ms ease, color 120ms ease; }
+.tree-arrow { flex: none; width: 24px; min-height: 24px; margin: 0 -5px; padding: 0; border: 0; background: transparent; color: #94a3b8; font-size: 9px; line-height: 14px; text-align: center; cursor: pointer; border-radius: 3px; transition: transform 120ms ease, color 120ms ease; }
 .tree-arrow:hover { background: #e5e7eb; color: #374151; }
 .tree-arrow.open { transform: rotate(90deg); }
 .main-stage { position: relative; grid-column: 2; min-width: 0; min-height: 0; overflow: hidden; background: #f5f7fa; }
@@ -78,7 +78,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .sidebar-collapsed .new-workspace span, .sidebar-collapsed .workspace-label, .sidebar-collapsed .sidebar-heading, .sidebar-collapsed .thread-tree { display: none; }
 .status-message { position: absolute; z-index: 6; top: 12px; right: 16px; display: flex; align-items: center; gap: 10px; max-width: 400px; padding: 9px 10px 9px 13px; border: 1px solid #fecaca; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 12px; box-shadow: 0 3px 10px rgba(127,29,29,.12); }
 .status-message span { flex: 1; line-height: 1.5; }
-.status-message button { display: grid; width: 22px; height: 22px; flex: none; place-items: center; border: 0; border-radius: 50%; background: transparent; padding: 0; color: #b91c1c; font-size: 15px; line-height: 1; }
+.status-message button { display: grid; width: 24px; height: 24px; min-height: 24px; flex: none; place-items: center; border: 0; border-radius: 50%; background: transparent; padding: 0; color: #b91c1c; font-size: 15px; line-height: 1; }
 .status-message button:hover { background: #fee2e2; }
 .main-stage { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; background: #fff; }
 .canvas-tabs { display: flex; height: 32px; flex: none; align-items: end; gap: 26px; padding: 0 24px; border-bottom: 1px solid #e5e7eb; background: #fff; }
@@ -107,7 +107,9 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .thread-card { position: absolute; display: grid; width: 310px; height: 276px; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 1px solid #d8e0e8; border-radius: 7px; background: #fff; box-shadow: 0 3px 11px rgba(33,48,67,.08); overflow: visible; }
 .thread-card:hover { border-color: #9ca3af; box-shadow: 0 8px 20px rgba(33,48,67,.13); }
 .thread-card.selected { box-shadow: 0 0 0 2px rgba(17,24,39,.16), 0 8px 20px rgba(33,48,67,.13); }
-.node-handle { position: absolute; top: -8px; left: 50%; display: grid; width: 36px; height: 16px; min-height: 16px; place-items: center; transform: translateX(-50%); border: 1px solid #d8e0e8; border-radius: 4px; background: #fff; cursor: grab; padding: 0; }
+/* 24px tall, still half outside the top edge (top: -12px), so the card grid is
+   untouched and the "..." sits where it always did. */
+.node-handle { position: absolute; top: -12px; left: 50%; display: grid; width: 36px; height: 24px; min-height: 24px; place-items: center; transform: translateX(-50%); border: 1px solid #d8e0e8; border-radius: 4px; background: #fff; cursor: grab; padding: 0; }
 .node-handle::after { content: '...'; display: block; margin: -5px 0 0 2px; color: #94a3b8; font-size: 11px; letter-spacing: 1.5px; line-height: 1; }
 /* The whole card drags (app.js skips buttons, links and the answer body), so
    the head, the meta strip and the blank card space advertise it. */
@@ -116,7 +118,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .thread-card.dragging { z-index: 3; box-shadow: 0 12px 26px rgba(33,48,67,.24); opacity: .92; }
 .thread-card-head { gap: 8px; min-width: 0; padding: 15px 12px 8px; }
 .thread-card-head .topic-dot { background: var(--thread-color); }
-.thread-title { min-width: 0; flex: 1; min-height: 22px; overflow: hidden; border: 0; background: transparent; padding: 0; color: #1f2937; font-size: 13px; font-weight: 720; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.thread-title { min-width: 0; flex: 1; min-height: 24px; overflow: hidden; border: 0; background: transparent; padding: 0; color: #1f2937; font-size: 13px; font-weight: 720; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .thread-title:hover { background: transparent; color: #111827; }
 .graph-continue-button, .graph-fold-button, .graph-branch-button { position: absolute; right: -12px; z-index: 4; display: grid; width: 24px; height: 24px; min-height: 24px; place-items: center; border-color: #9ca3af; border-radius: 50%; background: #fff; padding: 0; color: #111827; }
 .graph-continue-button, .graph-fold-button { top: 50%; transform: translateY(-50%); }
@@ -134,7 +136,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .thread-meta span + span::before { content: '·'; margin-right: 7px; }
 /* The intermediate-process badge is a button: it wraps its categories onto a
    second line rather than widening the card (310px is a layout contract). */
-.thread-meta .card-process-count { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; min-height: 18px; margin-left: auto; border: 0; border-radius: 9px; background: #eef4ff; padding: 1px 6px; color: #3478f6; font: inherit; font-weight: 650; cursor: pointer; }
+.thread-meta .card-process-count { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; min-height: 24px; margin-left: auto; border: 0; border-radius: 9px; background: #eef4ff; padding: 1px 6px; color: #3478f6; font: inherit; font-weight: 650; cursor: pointer; }
 .thread-meta .card-process-count span { white-space: nowrap; }
 .thread-meta .card-process-count::before { content: none; }
 .thread-meta .card-process-count:hover { background: #dbe8ff; }
@@ -274,7 +276,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .message-body table { display: block; max-width: 100%; margin: 0; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
 .message-body th, .message-body td { border: 1px solid #d8e0e8; padding: 5px 8px; text-align: left; overflow-wrap: anywhere; white-space: normal; }
 .message-body th { background: #f5f7fa; font-weight: 720; }
-.message-branch { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; margin-left: auto; border: 0; border-radius: 5px; background: transparent; padding: 0 6px; color: #8a97a8; font-size: 11px; }
+.message-branch { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin-left: auto; border: 0; border-radius: 5px; background: transparent; padding: 0 6px; color: #8a97a8; font-size: 11px; }
 .message-branch:hover { background: #eef4ff; color: #3478f6; }
 .message-branch svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .message-fold { display: grid; width: 24px; min-height: 24px; place-items: center; margin-left: 0; border: 0; border-radius: 50%; background: transparent; padding: 0; color: #94a3b8; }
@@ -358,6 +360,8 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] .graph-continue-button, [data-theme="dark"] .graph-fold-button, [data-theme="dark"] .graph-branch-button { border-color: #4a4f57; background: #1b1c1f; color: #e6e8eb; }
 [data-theme="dark"] .graph-continue-button:hover, [data-theme="dark"] .graph-fold-button:hover, [data-theme="dark"] .graph-branch-button:hover { border-color: #9ca3af; background: #26282d; }
 [data-theme="dark"] .graph-continue-button:focus-visible, [data-theme="dark"] .graph-fold-button:focus-visible, [data-theme="dark"] .graph-branch-button:focus-visible { outline-color: #7ea6f5; }
+[data-theme="dark"] .view-switch button:focus-visible { outline-color: #7ea6f5; }
+[data-theme="dark"] .minimap:focus-visible { outline-color: #7ea6f5; }
 [data-theme="dark"] .selection-followup { border-color: #5b8def; background: #5b8def; color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
 [data-theme="dark"] .selection-followup:hover { border-color: #7ea6f5; background: #7ea6f5; color: #fff; }
 [data-theme="dark"] .thread-meta { color: #737a83; }
@@ -499,6 +503,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] button.primary:hover { border-color: #2563eb; background: #2563eb; color: #fff; }
 @media (max-width: 760px) { [data-theme="dark"] .card-inspector { border-top-color: #2a2d33; border-left: 0; } }
 .minimap { position: fixed; z-index: 90; right: 16px; bottom: 16px; width: 160px; height: 100px; border: 1px solid rgba(0,0,0,.12); border-radius: 8px; background: rgba(248,249,250,.92); backdrop-filter: blur(4px); cursor: crosshair; box-shadow: 0 2px 8px rgba(0,0,0,.1); touch-action: none; }
+.minimap:focus-visible { outline: 2px solid #3478f6; outline-offset: 2px; }
 [data-theme="dark"] .minimap { background: rgba(21,23,27,.92); border-color: rgba(255,255,255,.1); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
 .tree-date-label { display: flex; align-items: center; gap: 4px; width: 100%; padding: 3px 8px; border: 0; background: transparent; color: #94a3b8; font-size: 11px; font-weight: 500; cursor: pointer; text-align: left; border-radius: 4px; }
 .tree-date-label:hover { background: #f1f5f9; color: #64748b; }
