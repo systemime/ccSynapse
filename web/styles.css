@@ -313,7 +313,14 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .compare-notes p { margin: 0; padding: 11px 0; border-top: 1px solid #eef2f5; color: #475569; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 @media (max-width: 760px) { .synapse-shell { --sidebar-width: 200px; --sidebar-half: 100px; } .synapse-shell.sidebar-collapsed { --sidebar-width: 56px; --sidebar-half: 28px; } .sidebar { padding: 6px 10px; } .detail-head { display: grid; gap: 12px; padding: 22px 18px 14px; } .detail-scroll { padding: 16px 18px 20px; } .message-composer { padding: 12px 18px 16px; } .message-user { max-width: 92%; } .compare-view { padding: 26px 18px; } .compare-columns { grid-template-columns: 1fr; } .topbar { padding: 0 10px; } .brand strong { display: none; } .card-inspector { top: auto; width: 100%; min-width: 0; max-height: 78%; border-top: 1px solid #dbe3ec; border-left: 0; } .card-inspector.is-opening, .card-inspector.is-closing { transform: translateY(24px); } }
 @media (max-width: 560px) { .synapse-shell { min-width: 0; grid-template-columns: 1fr; } .sidebar { display: none; } .topbar, .main-stage { grid-column: 1; } .view-switch { left: 50%; } .view-switch button { padding: 0 7px; } .top-actions > button { font-size: 11px; padding: 0 7px; } .thread-card { width: 280px; } }
-@media (prefers-reduced-motion: reduce) { .card-inspector { transition: opacity 120ms ease; } .card-inspector.is-opening, .card-inspector.is-closing { transform: none; } }
+/* Reduced motion: the looping animations go entirely, not just the one-shot
+   transitions. A pulsing dot runs for as long as a reply is pending and the
+   streaming dot animates during every reply — repeating motion is what
+   vestibular-sensitive users actually react to, and both read fine as static
+   shapes (the dot keeps its border, the streaming dot keeps its colour). The
+   remaining transitions move an 8–15px glyph or a hover border, and the one
+   large movement (the inspector sliding in) is already reduced below. */
+@media (prefers-reduced-motion: reduce) { .card-inspector { transition: opacity 120ms ease; } .card-inspector.is-opening, .card-inspector.is-closing { transform: none; } .card--pending-dot, [data-theme="dark"] .card--pending-dot, .streaming-dot { animation: none; } }
 
 /* ── Dark theme: follows DSH's body[data-ds-dark-theme] via synapse:theme ── */
 [data-theme="dark"] { color-scheme: dark; }
