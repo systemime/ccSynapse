@@ -875,18 +875,49 @@ test('a linear conversation points every prompt at the line above it', async () 
   } finally { await cleanup() }
 })
 
+// --- the card layer ---------------------------------------------------------
+// Every other card test here stops at the server: these two functions are the
+// client half of the same rule, "which turn owns this line, therefore who is
+// whose parent", and both are pure enough to run in a vm. Same window of
+// app.js as card-search.test.js / markdown-renderer.test.js, plus stubs for the
+// browser globals the slice borrows (card metrics, persisted canvas state, the
+// live-answer painter) and one stubbed lookup so a fixture thread carries its
+// own messages instead of going through the workspace store.
+const CANVAS_SLICE_START = 'const escapeHtml'
+const CANVAS_SLICE_END = 'function canvasConnectors'
+
+async function loadCardLayer() {
+  const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8')
+  const start = source.indexOf(CANVAS_SLICE_START)
+  const end = source.indexOf(CANVAS_SLICE_END)
+  // Assert the markers before slicing: a renamed or moved function must fail
+  // here naming the window, not slice to an empty string and fail three lines
+  // later with "conversationCards is not defined".
+  assert.ok(start !== -1 && end !== -1 && start < end,
+    `web/app.js must still hold a "${CANVAS_SLICE_START}" ... "${CANVAS_SLICE_END}" window for the card tests to load`)
+  const context = {
+    globalThis: {},
+    state: { cardPositions: new Map(), branchAnchors: new Map(), liveReplies: new Map(), pendingReplies: new Map() },
+    CARD_WIDTH: 310,
+    CARD_HEIGHT: 276,
+    CARD_GAP_Y: 42,
+    applyLiveAnswer: () => {},
+  }
+  vm.createContext(context)
+  vm.runInContext(`${source.slice(start, end)};globalThis.cardLayer = { turnCardContaining, conversationCards }`, context)
+  context.messagesFor = thread => thread.messages
+  return context.globalThis.cardLayer
+}
+
+const cardsById = cards => new Map(cards.map(card => [card.id, card]))
+
 test('the canvas resolves an answered line to the turn that owns it', async () => {
   // The last hop: a card holds `sourceParentSeq`, and the canvas turns it into
   // a parent card. A turn spans from its own question to just before the next
   // one, so the answer is the last turn starting at or below that line. A line
   // above every turn resolves to nothing, which is what sends the caller back
   // to the linear chain instead of leaving a card with no edge at all.
-  const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8')
-  const slice = source.slice(source.indexOf('function turnCardContaining'), source.indexOf('function conversationCards'))
-  const context = { globalThis: {} }
-  vm.createContext(context)
-  vm.runInContext(`${slice};globalThis.turnCardContaining = turnCardContaining`, context)
-  const { turnCardContaining } = context.globalThis
+  const { turnCardContaining } = await loadCardLayer()
   // The 4efe8a21 shape: a question at line 670 whose answered line 669 belongs
   // to the turn opened at 519, so it must NOT become the child of the card at 670.
   const siblings = [{ id: 'turn:519', sourceSeq: 519 }, { id: 'turn:670', sourceSeq: 670 }, { id: 'turn:756', sourceSeq: 756 }]
@@ -895,6 +926,77 @@ test('the canvas resolves an answered line to the turn that owns it', async () =
   assert.equal(turnCardContaining(siblings, 755).id, 'turn:670')
   assert.equal(turnCardContaining(siblings, 4), undefined, 'above every turn -> the linear fallback')
   assert.equal(turnCardContaining([{ id: 'empty', sourceSeq: undefined }], 9), undefined, 'a placeholder card owns no line')
+})
+
+test('conversationCards hangs a re-asked question off the card that owns its answered line', async () => {
+  // The unit test above cannot see the wiring: `conversationCards` has to put
+  // the answered line ON the card, pass it back through the lookup, and land on
+  // a sibling instead of the card it merely follows. It is also the only place
+  // a regression can hide — the store test stops at the field, and every test
+  // that does not call this function stays green while the canvas draws a
+  // linear chain.
+  const { conversationCards } = await loadCardLayer()
+  const thread = {
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题一', sourceSeq: 1, sourceParentSeq: 0 },
+      { kind: 'assistant', text: '答复一', sourceSeq: 2 },
+      { kind: 'user', text: '问题二', sourceSeq: 4, sourceParentSeq: 3 },
+      { kind: 'assistant', text: '答复二', sourceSeq: 5 },
+      // Asked again from line 3, which the FIRST turn owns (its window is [1, 4)).
+      { kind: 'user', text: '问题二（改）', sourceSeq: 6, sourceParentSeq: 3 },
+    ],
+  }
+  const cards = cardsById(conversationCards([thread]))
+  assert.deepEqual([...cards.keys()], ['sess:turn:1', 'sess:turn:4', 'sess:turn:6'])
+  assert.equal(cards.get('sess:turn:1').parentId, null, 'a session with no parent is a root')
+  assert.equal(cards.get('sess:turn:4').parentId, 'sess:turn:1', 'a linear question answers the line above it')
+  assert.equal(cards.get('sess:turn:6').parentId, 'sess:turn:1',
+    'the retry becomes a SIBLING of 问题二: it hangs off the turn owning line 3, not off the card it follows')
+})
+
+test('an absent or unresolvable answered line keeps the linear chain', async () => {
+  // No card may be left without an edge: a transcript written before the field
+  // existed, or one whose answered line sits above every turn, must still chain
+  // to its predecessor.
+  const { conversationCards } = await loadCardLayer()
+  const thread = {
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题一', sourceSeq: 1, sourceParentSeq: 0 },
+      { kind: 'assistant', text: '答复一', sourceSeq: 2 },
+      { kind: 'user', text: '问题二', sourceSeq: 4, sourceParentSeq: 3 },
+      { kind: 'assistant', text: '答复二', sourceSeq: 5 },
+      { kind: 'user', text: '问题三', sourceSeq: 6 },                    // field never written
+      { kind: 'assistant', text: '答复三', sourceSeq: 7 },
+      { kind: 'user', text: '问题四', sourceSeq: 8, sourceParentSeq: 0 }, // above every turn
+      { kind: 'assistant', text: '答复四', sourceSeq: 9 },
+    ],
+  }
+  const cards = cardsById(conversationCards([thread]))
+  assert.equal(cards.get('sess:turn:6').parentId, 'sess:turn:4', 'a missing field chains to the previous turn')
+  assert.equal(cards.get('sess:turn:8').parentId, 'sess:turn:6', 'a line above every turn chains to the previous turn')
+})
+
+test('a fork anchors on the parent turn that owns the last line it inherited', async () => {
+  // The cross-session half of the same rule, and the boundary that a sloppy
+  // unification breaks: the seed cut is EXCLUSIVE, so a parent question opening
+  // exactly on the cut line was not inherited and is not the fork point.
+  const { conversationCards } = await loadCardLayer()
+  const parent = {
+    id: 'parent', dshSessionId: 'parent', title: 'P', parentId: null, messages: [
+      { kind: 'user', text: 'p1', sourceSeq: 10, sourceParentSeq: 9 },
+      { kind: 'assistant', text: 'a1', sourceSeq: 12 },
+      { kind: 'user', text: 'p2', sourceSeq: 20, sourceParentSeq: 19 },
+      { kind: 'assistant', text: 'a2', sourceSeq: 22 },
+    ],
+  }
+  const child = {
+    id: 'child', dshSessionId: 'child', title: 'C', parentId: 'parent', sourceSeedLength: 20, messages: [
+      { kind: 'user', text: 'c1', sourceSeq: 1, sourceParentSeq: 0 },
+    ],
+  }
+  const cards = cardsById(conversationCards([parent, child]))
+  assert.equal(cards.get('child:turn:1').parentId, 'parent:turn:10',
+    'line 20 was cut off, so the fork point is the turn owning line 19')
 })
 
 test('a shrunk-in-place transcript re-indexes the parent line instead of reusing the old one', async () => {

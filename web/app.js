@@ -675,7 +675,10 @@ function layoutConversationGraph(cards, threads) {
 
 /**
  * The turn card that owns a transcript line: a turn spans from its own question
- * to just before the next one, and the turns arrive in file order.
+ * to just before the next one, and the turns arrive in file order. The line is
+ * inclusive — a question owns its own line and every line below the next
+ * question — so `seq` is a LINE, not an exclusive boundary. Both kinds of edge
+ * ask exactly this: which turn owns this line.
  */
 function turnCardContaining(siblings, seq) {
   const index = siblings.findLastIndex(card => Number.isInteger(card.sourceSeq) && card.sourceSeq <= seq)
@@ -778,12 +781,13 @@ function conversationCards(threads) {
       const sourceThread = threads.find(thread => thread.id === card.dshThreadId)
       const firstChildQuestion = siblings?.[0]
       const seedLength = sourceThread?.sourceSeedLength ?? firstChildQuestion?.sourceSeq
-      // A fork inherits every parent event before DSH's durable seed boundary.
-      // The latest parent question below that boundary is the exact Turn where
-      // this child was born. Canvas coordinates never participate in lineage.
-      const inheritedTurn = Number.isSafeInteger(seedLength)
-        ? parentCards?.filter(candidate => Number.isInteger(candidate.sourceSeq) && candidate.sourceSeq < seedLength).at(-1)
-        : undefined
+      // A fork inherits every parent event before DSH's durable seed boundary,
+      // so the last line this child inherited is seedLength - 1. The parent turn
+      // owning that line is the exact Turn where this child was born — the same
+      // question an in-session branch asks, answered by the same lookup. Canvas
+      // coordinates never participate in lineage.
+      const lastInheritedSeq = Number.isSafeInteger(seedLength) ? seedLength - 1 : undefined
+      const inheritedTurn = turnCardContaining(parentCards ?? [], lastInheritedSeq)
       card.parentId = state.branchAnchors.get(card.dshThreadId) ?? inheritedTurn?.id ?? null
     }
   }
