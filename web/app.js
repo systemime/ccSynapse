@@ -651,23 +651,45 @@ function layoutConversationGraph(cards, threads) {
   for (const thread of threads) visitThread(thread.id)
 
   const byId = new Map(cards.map(card => [card.id, card]))
-  const positioned = new Map()
-  const positionFor = (card, visiting = new Set()) => {
-    if (positioned.has(card.id)) return positioned.get(card.id)
-    if (visiting.has(card.id)) return { x: 86, y: 82 + (laneByThread.get(card.dshThreadId) ?? 0) * (CARD_HEIGHT + CARD_GAP_Y) }
+  const laneOf = card => laneByThread.get(card.dshThreadId) ?? 0
+  // A thread that re-asks from an earlier turn hangs two children off one card
+  // inside one lane, and both would claim the parent's row. The second and later
+  // sibling is counted here, from the card graph, so the fork's shape comes from
+  // the layout instead of from whichever sibling the collision solver happened to
+  // place first. Cross-thread forks (a branch session) keep their lane row.
+  const forkRowByCard = new Map()
+  const siblingsSeen = new Map()
+  for (const card of cards) {
+    if (card.parentId === null || byId.get(card.parentId)?.dshThreadId !== card.dshThreadId) continue
+    const index = siblingsSeen.get(card.parentId) ?? 0
+    siblingsSeen.set(card.parentId, index + 1)
+    if (index > 0) forkRowByCard.set(card.id, index)
+  }
+  // Columns depend on lineage alone: one step right of the parent.
+  const columnByCard = new Map()
+  const columnFor = (card, visiting = new Set()) => {
+    if (columnByCard.has(card.id)) return columnByCard.get(card.id)
+    if (visiting.has(card.id)) return 86
     visiting.add(card.id)
     const parent = card.parentId === null ? undefined : byId.get(card.parentId)
-    const parentPosition = parent === undefined ? undefined : positionFor(parent, visiting)
-    const position = {
-      x: parentPosition === undefined ? 86 : parentPosition.x + 365,
-      y: 82 + (laneByThread.get(card.dshThreadId) ?? 0) * (CARD_HEIGHT + CARD_GAP_Y),
-    }
+    const column = parent === undefined ? 86 : columnFor(parent, visiting) + 365
     visiting.delete(card.id)
-    positioned.set(card.id, position)
-    return position
+    columnByCard.set(card.id, column)
+    return column
   }
+  for (const card of cards) columnFor(card)
+  // Rows: the thread's lane, plus one row per sibling ahead of a fork card. A
+  // fork row steps further down while the cell still belongs to a card that
+  // claims it already, so a fork can only ever move itself — never the card
+  // sitting there, which is what used to cascade a fork into other sessions.
+  const claimedCells = new Set(cards.map(card => `${columnByCard.get(card.id)}:${laneOf(card)}`))
   for (const card of cards) {
-    card.naturalPosition = positionFor(card)
+    let row = laneOf(card) + (forkRowByCard.get(card.id) ?? 0)
+    if (forkRowByCard.has(card.id)) {
+      while (claimedCells.has(`${columnByCard.get(card.id)}:${row}`)) row += 1
+      claimedCells.add(`${columnByCard.get(card.id)}:${row}`)
+    }
+    card.naturalPosition = { x: columnByCard.get(card.id), y: 82 + row * (CARD_HEIGHT + CARD_GAP_Y) }
     if (!card.positionLocked) card.position = card.naturalPosition
   }
   return placeConversationCards(cards)
