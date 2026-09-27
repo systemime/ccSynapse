@@ -69,7 +69,7 @@ const state = {
   draft: null, error: '', workspaceLoad: 0, branchAnchors: new Map(savedBranchAnchors), cardPositions: new Map(savedCardPositions), collapsedCardIds: new Set(savedCollapsedCards), quickPhrases: savedQuickPhrases, quickPhraseEditorOpen: false,
   dragging: false, canvasGesture: false, canvasRefreshAfter: 0, canvasViewInitialized: false, canvasCamera: { x: 0, y: 0 }, mapCardSessionSwitches: new Set(),
   expandedMessageIds: new Set(),
-  canvasCards: undefined, canvasCardsById: undefined, canvasAllCards: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false,
+  canvasCards: undefined, canvasCardsById: undefined, canvasAllCards: undefined, canvasGraph: undefined, mountedCardIds: new Set(), canvasNeedsCenter: false, flashCardId: null,
   detailScrollByThread: new Map(), detailThreadId: null, detailTargetCardId: null,
   inspectorCardId: null, inspectorOpening: false, inspectorScrollByCard: new Map(),
   collapsedTreeNodes: new Set(),
@@ -1057,10 +1057,17 @@ function cardProcessBadge(card) {
   return `<button type="button" class="card-process-count${expanded ? ' expanded' : ''}" data-action="toggle-message" data-message="${escapeHtml(card.processKey)}" aria-expanded="${expanded}" aria-label="${label}" title="${label}">${chips.map(chip => `<span>${chip}</span>`).join('')}</button>`
 }
 
+// The two accent marks a card can carry: `selected` is the persistent ring (a
+// search hit, or the conversation a sidebar row picked), `is-flash` the one-shot
+// ring a camera jump leaves on the card it landed on. Both ride the markup
+// rather than a post-render DOM poke, so a card the camera move mounts fresh —
+// it was outside VIEWPORT_MARGIN a moment ago — still gets them.
+const cardMarks = card => `${card.id === state.selectedCardId ? ' selected' : ''}${card.id === state.flashCardId ? ' is-flash' : ''}`
+
 function conversationCard(card, graph) {
   if (isDotCard(card)) {
     const isPending = card.dshSessionId != null && state.pendingReplies.has(card.dshSessionId)
-    const selected = card.id === state.selectedCardId ? ' selected' : ''
+    const selected = cardMarks(card)
     const label = isPending ? `等待回复（第 ${card.turnIndex + 1} 轮）` : `等待助手（第 ${card.turnIndex + 1} 轮）`
     // role=button, not <button>: the dot keeps its own click path (the
     // delegated card handler opens the inspector), and the Enter/Space handler
@@ -1068,7 +1075,7 @@ function conversationCard(card, graph) {
     // click as a button action instead of a card click.
     return `<article class="thread-card card--pending-dot${selected}" role="button" tabindex="0" data-card-id="${escapeHtml(card.id)}" data-drag-card="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px" aria-label="${label}"><span aria-hidden="true">${card.turnIndex + 1}</span></article>`
   }
-  const selected = card.id === state.selectedCardId ? 'selected' : ''
+  const selected = cardMarks(card)
   // The harness marker, in the span that already named the card's origin: a
   // Codex card has to say so, and a second badge would only repeat it.
   const origin = harnessName(card.harness)
@@ -1081,7 +1088,7 @@ function conversationCard(card, graph) {
   const foldLabel = collapsed ? '展开后续对话' : '折叠后续对话'
   const foldButton = childCount === 0 || card.canContinue === true ? '' : `<button class="graph-fold-button${collapsed ? ' collapsed' : ''}" data-action="toggle-card-children" data-card="${escapeHtml(card.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${foldLabel}" title="${foldLabel}"><svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3.5 8h9"/>${collapsed ? '<path d="M8 3.5v9"/>' : ''}</svg></button>`
   const branchButton = childCount === 0 || card.canContinue === true || !Number.isInteger(card.answer?.sourceSeq) ? '' : `<button class="graph-branch-button" data-action="open-branch" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" data-seq="${card.answer.sourceSeq}" aria-label="在新对话中分支" title="在新对话中分支"><svg aria-hidden="true" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M13.0762 1.37207C14.0846 1.37228 14.9021 2.19077 14.9023 3.19922C14.9022 4.20772 14.0847 5.02518 13.0762 5.02539C12.2967 5.02539 11.6325 4.53691 11.3701 3.84961H4.35547C4.79397 4.26458 5.15861 4.7644 5.41699 5.33496L7.10645 9.06738C7.88526 10.7875 9.55104 11.9228 11.4189 12.0371C11.7085 11.4109 12.3411 10.9756 13.0762 10.9756C14.0843 10.9759 14.9023 11.7936 14.9023 12.8018C14.9023 13.81 14.0843 14.6277 13.0762 14.6279C12.2534 14.6279 11.5574 14.0832 11.3291 13.335C8.9868 13.1879 6.89981 11.7612 5.92285 9.60352L4.23242 5.87109C3.67503 4.64033 2.44878 3.84961 1.09766 3.84961V2.54883C1.10665 2.54883 1.11601 2.54975 1.125 2.5498L11.3701 2.54883C11.6326 1.86151 12.2969 1.37207 13.0762 1.37207ZM13.0762 12.2764C12.7858 12.2764 12.5508 12.5114 12.5508 12.8018C12.5508 13.0921 12.7858 13.3281 13.0762 13.3281C13.3664 13.3279 13.6025 13.092 13.6025 12.8018C13.6025 12.5115 13.3664 12.2766 13.0762 12.2764ZM13.0762 2.67285C12.7855 2.67285 12.55 2.90861 12.5498 3.19922C12.5499 3.48987 12.7855 3.72559 13.0762 3.72559C13.3667 3.72538 13.6024 3.48975 13.6025 3.19922C13.6023 2.90874 13.3666 2.67306 13.0762 2.67285Z" fill="currentColor"/></svg></button>`
-  return `<article class="thread-card ${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6"${card.answer?.pending === true ? ' aria-busy="true"' : ''}>
+  return `<article class="thread-card${selected}" data-card-id="${escapeHtml(card.id)}" data-position-key="${escapeHtml(card.positionKey)}" data-thread="${card.dshThreadId}" style="left:${card.position.x}px;top:${card.position.y}px;--thread-color:#3478f6"${card.answer?.pending === true ? ' aria-busy="true"' : ''}>
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
     ${continueButton}${foldButton}${branchButton}
     <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
@@ -1397,7 +1404,10 @@ function renderThreadNode(node, depth) {
   // role=button, not <button>: the expand arrow is itself a button, and the HTML
   // parser closes an outer button as soon as an inner one starts, which hoists
   // the arrow, dot and label out of the row and flattens the whole tree.
-  const row = `<div class="tree-row ${thread.id === state.activeId ? 'active' : ''}" role="button" tabindex="0" data-action="select-thread" data-thread="${thread.id}" style="--tree-indent:${indent}px"><span class="tree-indent-spacer"></span>${arrowHtml}<span class="tree-dot"></span><span class="tree-label">${escapeHtml(threadListTitle(thread))}</span>${badge}</div>`
+  // Two sessions often share a title, so the UUID is the only thing that tells
+  // them apart — it is what `claude --resume` takes, and it is a footprint no
+  // visible label has room for.
+  const row = `<div class="tree-row ${thread.id === state.activeId ? 'active' : ''}" role="button" tabindex="0" data-action="select-thread" data-thread="${thread.id}" title="${escapeHtml(thread.dshSessionId ?? thread.id)}" style="--tree-indent:${indent}px"><span class="tree-indent-spacer"></span>${arrowHtml}<span class="tree-dot"></span><span class="tree-label">${escapeHtml(threadListTitle(thread))}</span>${badge}</div>`
   if (collapsed) return row
   const childRows = children.filter(child => !isSubagentThread(child.thread)).flatMap(child => renderThreadNode(child, depth + 1)).join('')
   return row + childRows + renderAgentGroup(thread, children.filter(child => isSubagentThread(child.thread)), depth + 1)
@@ -1873,6 +1883,29 @@ function centerCanvasOnCard(card) {
   syncCanvasViewport()
 }
 
+// A thread's newest turn, before the collapse filter: where a jump to that
+// conversation lands. `canvasAllCards`, not `canvasCards` — a turn folded behind
+// a collapsed ancestor is still that thread's newest, the same rule
+// liveAnswerCard follows to find where a streaming reply belongs.
+const newestCard = threadId => state.canvasAllCards?.filter(card => card.dshThreadId === threadId).at(-1)
+
+const FLASH_MS = 1200
+let flashTimer = 0
+
+// The ring that says "landed here". One-shot: the timer clears both the state
+// and the class off the live node, because a re-render inside the window would
+// otherwise replay it (the mark rides the markup — see cardMarks).
+function flashCard(cardId) {
+  if (cardId === null || cardId === undefined) return
+  state.flashCardId = cardId
+  if (flashTimer !== 0) window.clearTimeout(flashTimer)
+  flashTimer = window.setTimeout(() => {
+    flashTimer = 0
+    state.flashCardId = null
+    document.querySelector('.thread-card.is-flash')?.classList.remove('is-flash')
+  }, FLASH_MS)
+}
+
 function focusActiveCard() {
   const cards = state.canvasCards
   if (cards === undefined || cards.length === 0) return
@@ -2273,12 +2306,21 @@ app.addEventListener('click', async event => {
     if (button.dataset.action === 'select-thread' && thread !== undefined) {
       state.mapCardSessionSwitches.clear()
       state.activeId = thread.id
-      state.selectedCardId = null
       state.inspectorCardId = null
       state.inspectorOpening = false
       state.error = ''
       if (state.workspace !== null) revealConversationThread(conversationCards(state.workspace.threads), thread.id)
+      // The row names a conversation, so the canvas has to show which one it
+      // became: without a jump the camera stayed where it was, and at 8% zoom
+      // the sidebar highlight was the only thing that changed — on a canvas
+      // holding a dozen lanes, nothing said which one that UUID was. Same shape
+      // as a search hit's landing (ring the card, then center on it).
+      const target = newestCard(thread.id)
+      state.selectedCardId = target?.id ?? null
+      flashCard(target?.id)
       render()
+      const landed = target === undefined ? undefined : state.canvasCardsById?.get(target.id)
+      if (landed !== undefined) centerCanvasOnCard(landed)
       // Bidirectional current-session sync: switch DSH's current session
       // without closing the map; the client confirms via synapse:current-session.
       if (thread.dshSessionId !== null) post('synapse:activate-session', { sessionId: thread.dshSessionId })

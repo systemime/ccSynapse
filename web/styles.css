@@ -98,9 +98,20 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 .connectors path.active-connector { stroke: #3478f6; }
 .connectors .draft-connector { stroke: #3478f6; stroke-dasharray: 5 4; }
 .cards-layer { position: absolute; inset: 0; }
-.thread-card { position: absolute; display: grid; width: 310px; height: 276px; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 1px solid #d8e0e8; border-radius: 6px; background: #fff; box-shadow: 0 3px 11px rgba(33,48,67,.08); overflow: visible; }
+.thread-card { position: absolute; display: grid; width: 310px; height: 276px; grid-template-rows: auto auto minmax(0, 1fr) auto; border: 1px solid #d8e0e8; border-radius: 6px; background: #fff; box-shadow: 0 3px 11px rgba(33,48,67,.08); overflow: visible; --flash-ring: rgba(52,120,246,.95); --flash-halo: rgba(52,120,246,.22); }
 .thread-card:hover { border-color: #9ca3af; box-shadow: 0 8px 20px rgba(33,48,67,.13); }
 .thread-card.selected { box-shadow: 0 0 0 2px rgba(17,24,39,.16), 0 8px 20px rgba(33,48,67,.13); }
+/* Where a sidebar pick landed. A ring drawn on a pseudo-element rather than the
+   card's own box-shadow, so the flash never has to name — and therefore never
+   has to match — the theme's resting shadow; it fades on opacity alone, which
+   the compositor can do without repainting the card. One-shot: the class is on
+   the markup and cleared by a timer (1.2s, matching FLASH_MS), so the ring goes
+   even if no re-render comes to rebuild the card without it. `opacity: 0` is
+   the resting style, not just the last keyframe: with fill-mode `none` the
+   element reverts to it when the animation ends, so a timer that fires a frame
+   late cannot pop the ring back on at full strength. */
+.thread-card.is-flash::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: 0 0 0 3px var(--flash-ring), 0 0 0 16px var(--flash-halo); opacity: 0; animation: card-flash 1.2s ease-out 1; }
+@keyframes card-flash { 0% { opacity: 1; } 100% { opacity: 0; } }
 /* 24px tall, still half outside the top edge (top: -12px), so the card grid is
    untouched and the "..." sits where it always did. */
 .node-handle { position: absolute; top: -12px; left: 50%; display: grid; width: 36px; height: 24px; min-height: 24px; place-items: center; transform: translateX(-50%); border: 1px solid #d8e0e8; border-radius: 6px; background: #fff; cursor: grab; padding: 0; }
@@ -323,8 +334,12 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
    vestibular-sensitive users actually react to, and both read fine as static
    shapes (the dot keeps its border, the streaming dot keeps its colour). The
    remaining transitions move an 8–15px glyph or a hover border, and the one
-   large movement (the inspector sliding in) is already reduced below. */
-@media (prefers-reduced-motion: reduce) { .card-inspector { transition: opacity 120ms ease; } .card-inspector.is-opening, .card-inspector.is-closing { transform: none; } .card--pending-dot, [data-theme="dark"] .card--pending-dot, .streaming-dot { animation: none; } }
+   large movement (the inspector sliding in) is already reduced below.
+   The jump ring is the one animation that stays, because removing it would
+   remove the answer to「跳到哪里去了」rather than the motion: it is held open
+   at full opacity and disappears when the same 1.2s timer clears the class, so
+   it reads as a mark that appears and goes, not as something that moves. */
+@media (prefers-reduced-motion: reduce) { .card-inspector { transition: opacity 120ms ease; } .card-inspector.is-opening, .card-inspector.is-closing { transform: none; } .card--pending-dot, [data-theme="dark"] .card--pending-dot, .streaming-dot { animation: none; } .thread-card.is-flash::after { animation: none; opacity: 1; } }
 
 /* ── Dark theme: follows DSH's body[data-ds-dark-theme] via synapse:theme ── */
 [data-theme="dark"] { color-scheme: dark; }
@@ -341,7 +356,7 @@ button.primary:hover { border-color: #000; background: #000; color: #fff; }
 [data-theme="dark"] .connectors path { stroke: #606878; }
 [data-theme="dark"] .connectors path.active-connector { stroke: #5b8def; }
 [data-theme="dark"] .connectors .draft-connector { stroke: #5b8def; }
-[data-theme="dark"] .thread-card { border-color: #2a2d33; background: #1b1c1f; box-shadow: 0 3px 11px rgba(0,0,0,.35); }
+[data-theme="dark"] .thread-card { border-color: #2a2d33; background: #1b1c1f; box-shadow: 0 3px 11px rgba(0,0,0,.35); --flash-ring: rgba(91,141,239,.95); --flash-halo: rgba(91,141,239,.3); }
 [data-theme="dark"] .thread-card:hover { border-color: #4a4f57; box-shadow: 0 8px 20px rgba(0,0,0,.45); }
 [data-theme="dark"] .thread-card.selected { box-shadow: 0 0 0 2px rgba(91,141,239,.4), 0 8px 20px rgba(0,0,0,.45); }
 [data-theme="dark"] .node-handle { border-color: #2a2d33; background: #1b1c1f; }
