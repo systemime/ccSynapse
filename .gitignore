@@ -4,3 +4,12 @@
 
 # design-review output
 .ui-design/
+
+# graphify analysis output for this repo — regenerable, not source
+graphify-out/
+
+# local Claude Code config (created on install)
+.claude/settings.json
+
+# zero runtime deps, but npm would create this
+node_modules/

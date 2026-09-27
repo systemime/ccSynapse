@@ -12,5 +12,22 @@
     "build": "node --check server/index.js && node --check server/transcript.js && node --check server/bridge.js && node --check server/workspace-store.js && node --check web/app.js",
     "test": "node --test test/*.test.js"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "systemime",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/systemime/ccSynapse.git"
+  },
+  "homepage": "https://github.com/systemime/ccSynapse#readme",
+  "bugs": {
+    "url": "https://github.com/systemime/ccSynapse/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "session-map",
+    "canvas",
+    "visualization",
+    "transcript"
+  ]
 }

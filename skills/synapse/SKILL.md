@@ -32,20 +32,34 @@ node "${CLAUDE_PLUGIN_ROOT}/server/index.js"
 cmd //c start "" http://127.0.0.1:3080/
 ```
 
-4. 告诉用户点击顶部「会话地图」，并说明画布上能做什么（拖拽/缩放、点卡片看详情、选中回答里的文字直接追问、卡片底部「分支」开新分支、「定位」回到当前会话）。
+4. 告诉用户画布**就是默认视图，不需要点任何东西**，并说明能做什么：
+
+   - **导航**：拖动画布平移、滚轮缩放（8%–400%）、右下角小地图点击或拖拽定位、「全览」把所有卡片收进视口
+   - **卡片**：默认只显示这一轮的**提问**和**输出**；思考、工具调用、Skill、MCP、子代理收在底部徽标里，点一下就地展开
+   - **详情**：点卡片标题或底部「详情」进单会话视图
+   - **追问**：在回答里选中一段文字，会出现浮层带进新的追问
+   - **分支**：卡片底部「分支」从该轮开新会话（走 `claude --bg --fork-session`）
+   - **搜索**：`Ctrl+K`（macOS `Cmd+K`）按提问和回答全文搜索并跳转
+   - **归档 / 恢复**：卡片底部「归档」；侧边栏底部「已归档」可恢复
+   - **切换**：画布上方标签栏的**「地图」/「详情」**在两个视图间切换
 
 ## 配置
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `CCSYNAPSE_PORT` | `3080` | 端口 |
-| `CCSYNAPSE_HOME` | `~/.claude/synapse` | 画布元数据目录 |
+| `CCSYNAPSE_HOST` | `127.0.0.1` | 监听地址 |
+| `CCSYNAPSE_HOME` | `$CLAUDE_PLUGIN_DATA` → `~/.claude/synapse` | 画布元数据目录 |
 | `CCSYNAPSE_PROJECTS` | `~/.claude/projects` | 会话记录目录 |
 | `CCSYNAPSE_BG_ARGS` | 空 | 每次 `claude --bg` 追加的参数，例如 `--permission-mode acceptEdits` |
 | `CCSYNAPSE_CLAUDE_BIN` | 自动探测 | `claude` 可执行文件路径 |
+| `CCSYNAPSE_TRUSTED_HOSTS` | 空 | 额外允许的 Host，局域网访问时填写 |
 
 ## 注意
 
 - 分支走 `claude --bg --resume <id> --fork-session`。后台会话没有终端，需要授权的工具调用会被拒绝；如果分支卡住，设置 `CCSYNAPSE_BG_ARGS="--permission-mode acceptEdits"` 后重启服务。
 - `claude --bg` 要求工作目录已在 Claude Code 里被信任，否则会直接报「Workspace not trusted」。
-- 画布数据在 `workspaces.json`，删除它只丢布局和归档状态，不会动任何会话记录。
+- **画布数据是两个文件，删除的后果不同**：
+  - `workspaces.json` —— **用户状态**（卡片位置、归档记录、分支别名）。删了会丢布局和归档，**不会动任何会话记录**。
+  - `workspaces-projection.json` —— **可重建的投影缓存**（消息、工具记录）。随时可删，重启后自动重算。
+- 端口被占用时服务会打印一条可读提示后退出，不会留下半启动的进程。
