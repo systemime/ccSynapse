@@ -707,6 +707,20 @@ function turnCardContaining(siblings, seq) {
   return index === -1 ? undefined : siblings[index]
 }
 
+/**
+ * The tool families the card names separately before its generic count. A skill
+ * load, an MCP server call and a subagent spawn each explain a long turn in a
+ * way "工具 12" does not. Measured over one real corpus: Agent 57, Skill 7,
+ * mcp__* 3 — rare enough that the badge only grows a chip when one occurs.
+ */
+function countToolKind(name, kinds) {
+  if (typeof name !== 'string') return
+  if (name === 'Skill') kinds.Skill += 1
+  // `Task` is what the subagent tool was called before it was renamed.
+  else if (name === 'Agent' || name === 'Task') kinds.Agent += 1
+  else if (name.startsWith('mcp__')) kinds.MCP += 1
+}
+
 function conversationCards(threads) {
   const cards = []
   const cardsByThread = new Map()
@@ -718,16 +732,45 @@ function conversationCards(threads) {
       if (question.kind !== 'user') continue
       const replies = []
       const errors = []
+      const processEntries = []
+      const toolKinds = { Skill: 0, MCP: 0, Agent: 0 }
       let processCount = 0
+      let thinking = 0
+      let narrationCount = 0
       for (let replyIndex = messageIndex + 1; replyIndex < messages.length; replyIndex++) {
         const reply = messages[replyIndex]
         if (reply.kind === 'user') break
-        if (reply.kind === 'assistant') replies.push(reply)
+        if (reply.kind === 'assistant') {
+          replies.push(reply)
+          thinking += reply.thinking ?? 0
+          // A reply that carried tool calls is the turn TALKING, not the turn
+          // answering. It goes in the summary with the tools it announced.
+          if (reply.intermediate === true) {
+            narrationCount += 1
+            processEntries.push({ name: '叙述', arguments: null, result: reply.text, error: null })
+          }
+        }
         if (reply.kind === 'error') errors.push(reply)
-        if (Array.isArray(reply.process)) processCount += reply.process.length
-        else if (reply.kind === 'tool') processCount += 1
+        if (Array.isArray(reply.process)) {
+          processCount += reply.process.length
+          for (const entry of reply.process) {
+            processEntries.push({ ...entry })
+            countToolKind(entry.name, toolKinds)
+          }
+        } else if (reply.kind === 'tool') {
+          processCount += 1
+          processEntries.push({ name: processSummary(reply.text), arguments: reply.text, result: null, error: null })
+        }
       }
-      const answer = replies.at(-1) ?? null
+      // The turn's OUTPUT, which is not simply its last word: a reply carrying
+      // tool calls is narration, and a message Claude Code wrote itself is a
+      // notice, not an answer (server: `intermediate` / `synthetic`). Falling
+      // back keeps the three cases that have no output of their own readable —
+      // last thing the model actually said, then anything at all, so a turn with
+      // text never renders an empty card.
+      const answer = replies.findLast(reply => reply.intermediate !== true && reply.synthetic !== true)
+        ?? replies.findLast(reply => reply.synthetic !== true)
+        ?? replies.at(-1) ?? null
       const error = errors.at(-1) ?? null
       const turnIndex = turns.length
       const id = `${thread.id}:turn:${question.sourceSeq ?? messageIndex}`
@@ -754,6 +797,13 @@ function conversationCards(threads) {
         answer,
         error,
         processCount,
+        thinking,
+        narrationCount,
+        toolKinds,
+        processEntries,
+        // The exact key processRecords derives from the card id, so the badge and
+        // the panel it opens agree on one entry of state.expandedMessageIds.
+        processKey: `${id}:process`,
       })
     }
     // The one entry point for partial text: both this render and the streaming
@@ -974,6 +1024,28 @@ function canvasConnectors(cards) {
   return links.join('')
 }
 
+/**
+ * The card's intermediate-process badge: what the card folded away (thinking
+ * blocks, narration, tool calls by family), one chip per non-zero category, and
+ * the button that reveals the same records the detail view shows. It carries the
+ * SAME `data-message` key as the processRecords section it opens, so the open
+ * state is the ordinary `expandedMessageIds` set and one click opens both the
+ * section and its entries.
+ */
+function cardProcessBadge(card) {
+  const chips = []
+  if (card.thinking > 0) chips.push(`思考 ${card.thinking}`)
+  if (card.narrationCount > 0) chips.push(`叙述 ${card.narrationCount}`)
+  const kinds = card.toolKinds ?? {}
+  const named = (kinds.Skill ?? 0) + (kinds.MCP ?? 0) + (kinds.Agent ?? 0)
+  if (card.processCount - named > 0) chips.push(`工具 ${card.processCount - named}`)
+  for (const family of ['Skill', 'MCP', 'Agent']) if ((kinds[family] ?? 0) > 0) chips.push(`${family} ${kinds[family]}`)
+  if (chips.length === 0) return ''
+  const expanded = state.expandedMessageIds.has(card.processKey)
+  const label = expanded ? '收起中间过程' : '展开中间过程'
+  return `<button type="button" class="card-process-count${expanded ? ' expanded' : ''}" data-action="toggle-message" data-message="${escapeHtml(card.processKey)}" aria-expanded="${expanded}" aria-label="${label}" title="${label}">${chips.map(chip => `<span>${chip}</span>`).join('')}</button>`
+}
+
 function conversationCard(card, graph) {
   if (isDotCard(card)) {
     const isPending = card.dshSessionId != null && state.pendingReplies.has(card.dshSessionId)
@@ -995,8 +1067,8 @@ function conversationCard(card, graph) {
     <button class="node-handle" data-drag-card="${card.id}" aria-label="拖动 ${escapeHtml(card.question)}" title="拖动卡片"></button>
     ${continueButton}${foldButton}${branchButton}
     <div class="thread-card-head"><span class="topic-dot"></span><button class="thread-title" data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话：${escapeHtml(card.question)}">${escapeHtml(card.question)}</button></div>
-    <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span>${card.error === null ? '' : '<span class="card-error-status">失败</span>'}${card.processCount > 0 ? `<span class="card-process-count">工具 ${card.processCount}</span>` : ''}</div>
-    <div class="thread-answer">${card.answer === null ? (card.error === null ? '<p class="thread-answer-empty">等待助手回复</p>' : '') : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}${card.error === null ? '' : `<p class="thread-answer-error" title="${escapeHtml(card.error.text)}">本轮失败：${escapeHtml(card.error.text)}</p>`}</div>
+    <div class="thread-meta"><span>${source}</span><span>第 ${card.turnIndex + 1} 轮</span>${card.error === null ? '' : '<span class="card-error-status">失败</span>'}${cardProcessBadge(card)}</div>
+    <div class="thread-answer">${state.expandedMessageIds.has(card.processKey) ? processRecords(card.processEntries, card.id) : ''}${card.answer === null ? (card.error === null ? '<p class="thread-answer-empty">等待助手回复</p>' : '') : card.answer.pending && card.answer.text === '' ? '<p class="thread-answer-pending">正在回复</p>' : `${renderMarkdown(card.answer.text)}${card.answer.pending ? '<p class="thread-answer-pending">正在回复</p>' : ''}`}${card.error === null ? '' : `<p class="thread-answer-error" title="${escapeHtml(card.error.text)}">本轮失败：${escapeHtml(card.error.text)}</p>`}</div>
     <footer><button data-action="show-thread" data-thread="${card.dshThreadId}" data-card="${escapeHtml(card.id)}" title="查看完整会话" aria-label="查看完整会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 8.5 8 2.5l6 6V13.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5Z"/><path d="M6.2 14v-3.6a1.8 1.8 0 0 1 3.6 0V14" /></svg>详情</button><button data-action="open-dsh" data-thread="${card.dshThreadId}" data-seq="${Number.isInteger(card.sourceSeq) ? card.sourceSeq : ''}" title="在 Claude Code 中打开" aria-label="在 Claude Code 中打开"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3.5H4.5A1.5 1.5 0 0 0 3 5v6.5A1.5 1.5 0 0 0 4.5 13H11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M9.5 3.5h3v3M12.4 3.6 7.5 8.5"/></svg>终端</button><button data-action="archive-thread" data-thread="${card.dshThreadId}" title="归档此会话" aria-label="归档此会话"><svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5h11M5.5 7v5.5a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V7"/><path d="M4 5 5 2.8a.7.7 0 0 1 .6-.4h4.8a.7.7 0 0 1 .6.4L12 5M6 9.5h4"/></svg>归档</button></footer>
   </article>`
 }

@@ -334,3 +334,58 @@ test('truncates over-long projections with a detail-view marker', async () => {
   assert.equal(assistant.text.length, 8_000 + '\n——…（详情查看全文）'.length)
   assert.ok(assistant.text.endsWith('——…（详情查看全文）'))
 })
+
+test('a message keeps the shape that tells the canvas output from narration', async () => {
+  // The canvas picks a turn's answer out of these fields (app.js `conversationCards`),
+  // so they have to survive every path a message is written by: a fresh
+  // projection, a replay of the same line, and the other half of a message the
+  // poll boundary split in two.
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-synapse-shape-'))
+  const store = new WorkspaceStore(join(directory, 'state.json'))
+  const message = (id, seq, text, extra) => ({
+    type: 'assistant/message', seq, time: seq + 1,
+    data: { turn: 1, step: 1, messageId: id, message: { content: [{ type: 'text', text }] }, ...extra },
+  })
+  const session = {
+    id: 'session-shape', header: { meta: { cwd: 'C:\work\shape' } }, firstLiveSeq: 0,
+    events: [
+      message('m1', 0, '我先看一下这个文件', { intermediate: true, thinking: 2 }),
+      message('m2', 1, '改好了：这里是结论', { intermediate: false, thinking: 0 }),
+    ],
+  }
+  const projected = await store.projectSession(session, 0, 'T')
+  assert.deepEqual(projected.messages.map(item => [item.intermediate, item.synthetic, item.thinking]),
+    [[true, undefined, 2], [undefined, undefined, undefined]],
+    'an ordinary reply writes no shape at all; the narration says why it is one')
+
+  // A build that did not emit the fields yet projected `m2` with nothing. The
+  // replay carries the values now and must fill that hole (fill only, exactly
+  // like sourceParentSeq) — otherwise nothing already on disk can ever be
+  // reclassified, and every card written before this change keeps showing
+  // narration as the answer.
+  session.events[1].data = { ...session.events[1].data, intermediate: true, synthetic: true, thinking: 1 }
+  const replayed = await store.projectSession(session, 0, 'T')
+  assert.equal(replayed.messages.length, 2, 'the replay still does not duplicate a message')
+  assert.deepEqual(replayed.messages.map(item => [item.intermediate, item.synthetic, item.thinking]),
+    [[true, undefined, 2], [true, true, 1]], 'both holes are filled')
+
+  // The message's other half: the transcript held it open at EOF and released it
+  // as a second event with the same message id. Its blocks are additional.
+  session.events.push(message('m2', 2, '后半段', { intermediate: false, thinking: 1 }))
+  const merged = await store.projectSession(session, 0, 'T')
+  assert.equal(merged.messages.length, 2, 'the split half folds back into its own message')
+  assert.equal(merged.messages[1].text, '改好了：这里是结论\n后半段')
+  assert.equal(merged.messages[1].thinking, 2, 'the halves think separately, so the counts add')
+  assert.equal(merged.messages[1].intermediate, true, 'the flag only ever turns on')
+
+  // Replaying everything again must not double anything: a re-read of a line
+  // fills, never adds. Thinking is the one that would silently grow per restart.
+  const again = await store.projectSession(session, 0, 'T')
+  assert.deepEqual(again.messages.map(item => [item.intermediate, item.synthetic, item.thinking]),
+    [[true, undefined, 2], [true, true, 2]], 'replay is idempotent')
+
+  await store.flush()
+  const reloaded = await new WorkspaceStore(join(directory, 'state.json')).get((await store.list())[0].id)
+  assert.deepEqual(reloaded.threads[0].messages.map(item => [item.intermediate, item.synthetic, item.thinking]),
+    [[true, undefined, 2], [true, true, 2]], 'and it survives a restart')
+})
