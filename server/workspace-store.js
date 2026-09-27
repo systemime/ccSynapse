@@ -557,6 +557,16 @@ export class WorkspaceStore {
     // branch; the canvas resolves the card's parent from it and treats a
     // missing field as "the previous turn" (see conversationCards).
     const sourceParentSeq = projection.kind === 'user' && Number.isSafeInteger(event.data?.parentSeq) ? event.data.parentSeq : undefined
+    // ccSynapse: how the canvas tells a turn's output from its steps — the API
+    // message carried tool calls (`intermediate`), or Claude Code wrote it
+    // itself (`synthetic`), plus how many thinking blocks it had. Absent means
+    // "an ordinary model reply", so only the present cases are stored and a
+    // normal answer writes nothing new (see transcript.js `drain`).
+    const shape = {
+      intermediate: projection.kind === 'assistant' && event.data?.intermediate === true,
+      synthetic: projection.kind === 'assistant' && event.data?.synthetic === true,
+      thinking: projection.kind === 'assistant' && Number.isInteger(event.data?.thinking) ? event.data.thinking : 0,
+    }
     const at = new Date(event.time).toISOString()
     // ccSynapse: ONE API message can arrive as several events. The transcript
     // holds a message's text open at the end of the file and releases it as soon
@@ -571,11 +581,22 @@ export class WorkspaceStore {
     const carried = messageId === null ? undefined : thread.messages.find(message => message.sourceMessageId === messageId)
     if (carried !== undefined) {
       // A restart replays every file from line 0. The message id cannot tell a
-      // replayed line from a new one, so the line's own seq does.
-      if (carried.sourceSeqs.includes(event.seq)) return
+      // replayed line from a new one, so the line's own seq does. It still has to
+      // FILL: this is the branch a replayed assistant line leaves through (its
+      // message id finds the stored message before the seq lookup below ever
+      // runs), so an early return here without the backfill is a hole no replay
+      // can ever close.
+      if (carried.sourceSeqs.includes(event.seq)) {
+        fillMessageShape(carried, shape)
+        return
+      }
       carried.sourceSeqs.push(event.seq)
       const joined = noteProjection(projection.kind, `${carried.text}\n${projection.text}`)
       if (joined !== null) carried.text = joined.text
+      // The message's OTHER half, not a re-read of it, so the shape only turns on
+      // and its thinking blocks are additional to the ones already counted.
+      markMessageShape(carried, shape)
+      if (shape.thinking > 0) carried.thinking = (carried.thinking ?? 0) + shape.thinking
       thread.updatedAt = at
       workspace.updatedAt = at
       return
@@ -583,11 +604,13 @@ export class WorkspaceStore {
     const existing = thread.messages.find(message => message.sourceSeq === event.seq)
     if (existing !== undefined) {
       // Replay dedups by seq, so a field the projection rules only learned to
-      // emit LATER (sourceParentSeq, added in 91a5789) can never reach a message
-      // written before it: every startup replay carries the value and this
-      // branch throws it away. Backfill the hole instead — fill only, so a
-      // recorded value is never overwritten by a stale re-read.
+      // emit LATER (sourceParentSeq, added in 91a5789; intermediate/synthetic/
+      // thinking, the same trap again) can never reach a message written before
+      // it: every startup replay carries the value and this branch throws it
+      // away. Backfill the hole instead — fill only, so a recorded value is
+      // never overwritten by a stale re-read.
       if (existing.kind === 'user') existing.sourceParentSeq ??= sourceParentSeq
+      if (existing.kind === 'assistant') fillMessageShape(existing, shape)
       return
     }
     const message = {
@@ -603,6 +626,9 @@ export class WorkspaceStore {
       // across events by the poll boundary can be recognized and merged (above).
       ...(messageId === null ? {} : { sourceMessageId: messageId, sourceSeqs: [event.seq] }),
       ...(sourceParentSeq === undefined ? {} : { sourceParentSeq }),
+      ...(shape.intermediate ? { intermediate: true } : {}),
+      ...(shape.synthetic ? { synthetic: true } : {}),
+      ...(shape.thinking > 0 ? { thinking: shape.thinking } : {}),
     }
     this.attachPendingProcess(thread, message)
     thread.messages.push(message)
@@ -863,6 +889,23 @@ function contentText(content) {
     if (block?.type === 'tool-result') return contentText(block.content)
     return []
   }).filter(value => typeof value === 'string' && value.trim() !== '').join('\n')
+}
+
+/**
+ * A stored message's tool-call and synthetic flags. Both are properties of the
+ * whole API message that only ever turn ON, so merging sets them and never
+ * clears one — a later half of a split message learning about a tool call must
+ * upgrade the record, and a stale re-read of an old line must not downgrade it.
+ */
+function markMessageShape(message, { intermediate, synthetic }) {
+  if (intermediate) message.intermediate = true
+  if (synthetic) message.synthetic = true
+}
+
+/** Fill a stored message from a re-read of the SAME line, so replay adds nothing. */
+function fillMessageShape(message, shape) {
+  markMessageShape(message, shape)
+  if (shape.thinking > (message.thinking ?? 0)) message.thinking = shape.thinking
 }
 
 function titleFromText(text) {

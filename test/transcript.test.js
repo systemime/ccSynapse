@@ -1069,3 +1069,143 @@ test('a shrunk-in-place transcript re-indexes the parent line instead of reusing
     await rm(directory, { recursive: true, force: true })
   } finally { await cleanup() }
 })
+
+// --- output vs. narration ---------------------------------------------------
+// The canvas shows a turn's OUTPUT and folds the rest into a badge, and only the
+// transcript knows which is which: narration is the text of an API message that
+// also called a tool, the output is the text of one that did not. Measured over
+// one real corpus, of 1043 text-bearing API messages 882 carried tool calls and
+// 161 were pure text, the pure ones averaging 74% longer.
+
+test('an assistant message says whether it narrated or answered, and how much it thought', async () => {
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_narrate', 0, { type: 'thinking', thinking: '先想一下' }),
+    assistantLine('msg_narrate', 1, { type: 'text', text: '我先看一下这个文件' }),
+    assistantLine('msg_narrate', 2, { type: 'tool_use', id: 'toolu_n', name: 'Read', input: { file_path: 'x' } }),
+    toolResultLine('toolu_n', 'body'),
+    assistantLine('msg_answer', 4, { type: 'text', text: '改好了：这里是结论' }),
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')          // the last group is held until the file stops growing
+    const assistants = store.projected.filter(event => event.type === 'assistant/message')
+    assert.deepEqual(
+      assistants.map(event => [event.data.message.content[0].text, event.data.intermediate, event.data.synthetic, event.data.thinking]),
+      [['我先看一下这个文件', true, false, 1], ['改好了：这里是结论', false, false, 0]],
+      'the message that called a tool is narration; the pure text is the answer',
+    )
+  } finally { await cleanup() }
+})
+
+test('a message Claude Code wrote itself is marked synthetic', async () => {
+  // The `<synthetic>` model is how Claude Code marks the assistant messages it
+  // writes itself — measured 13 in one corpus, and the one behind a 11274-char
+  // turn whose card showed 22 characters: "No response requested." after the
+  // user interrupted the work.
+  const { root, cleanup } = await fixture([
+    userLine('问题'),
+    assistantLine('msg_work', 0, { type: 'text', text: '正在改，先跑一遍测试' }),
+    assistantLine('msg_work', 1, { type: 'tool_use', id: 'toolu_w', name: 'Bash', input: { command: 'npm test' } }),
+    { type: 'assistant', uuid: 'a9', timestamp: '2026-01-01T00:00:03.000Z', cwd: 'F:\Project\Demo', sessionId: 's1',
+      message: { id: 'msg_notice', role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'No response requested.' }] } },
+  ])
+  try {
+    const store = stubStore()
+    const source = new TranscriptSource(root)
+    await source.sync(store, 'T')
+    await source.sync(store, 'T')
+    const notices = store.projected.filter(event => event.type === 'assistant/message' && event.data.synthetic === true)
+    assert.deepEqual(notices.map(event => event.data.message.content[0].text), ['No response requested.'])
+    assert.equal(notices[0].data.intermediate, false, 'a notice called no tool — the two flags are independent')
+  } finally { await cleanup() }
+})
+
+test('a card shows the turn output, not the last thing the turn said', async () => {
+  // The client half of the shape the server records. 882 of 1043 text-bearing API
+  // messages in one real corpus carried tool calls ("let me look at X first"); the
+  // 161 pure-text ones average 74% longer. Showing the last message regardless
+  // put a 22-character notice on a 11274-character turn.
+  const { conversationCards } = await loadCardLayer()
+  const thread = {
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题', sourceSeq: 0 },
+      { kind: 'assistant', text: '我先看一下这个文件。', sourceSeq: 1, intermediate: true, thinking: 1,
+        process: [{ callId: 'c1', name: 'Bash', arguments: '{"command":"ls"}', result: 'ok', error: null }] },
+      { kind: 'assistant', text: '这就是最终答案。', sourceSeq: 2 },
+    ],
+  }
+  const [card] = conversationCards([thread])
+  assert.equal(card.answer.text, '这就是最终答案。')
+  assert.equal(card.answer.sourceSeq, 2)
+  // The narration and its tool are what the badge counts and the panel reveals.
+  assert.equal(card.thinking, 1)
+  assert.equal(card.narrationCount, 1)
+  assert.equal(card.processCount, 1)
+  // Spread re-creates the array in this realm: a vm array has another prototype.
+  assert.deepEqual([...card.processEntries.map(entry => entry.name)], ['叙述', 'Bash'])
+  assert.equal(card.processEntries[0].result, '我先看一下这个文件。', 'the panel shows the narration with the tools it announced')
+})
+
+test('a turn with no output of its own falls back to what the model last said', async () => {
+  // Interrupted mid-work: every text message carried tool calls, so the turn has
+  // no answer. The fallback must never leave a card empty — it shows the last
+  // narration, which is the newest thing a person could read.
+  const { conversationCards } = await loadCardLayer()
+  const thread = {
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题', sourceSeq: 0 },
+      { kind: 'assistant', text: '第一步。', sourceSeq: 1, intermediate: true },
+      { kind: 'assistant', text: '第二步。', sourceSeq: 2, intermediate: true },
+    ],
+  }
+  const [card] = conversationCards([thread])
+  assert.equal(card.answer.text, '第二步。')
+  assert.equal(card.narrationCount, 2)
+  assert.equal(card.thinking, 0, 'thinking counts blocks, so a message without any adds nothing')
+})
+
+test('a notice Claude Code wrote itself is not the answer while the model said anything', async () => {
+  // `synthetic` is a message Claude Code wrote, not the model. Measured 13 in one
+  // corpus: 3 were "No response requested." appended to an interrupted work turn
+  // of 6080-11274 characters, where the card showed the 22-character notice and
+  // nothing else. The other 9 were the ONLY text of their turn — model and auth
+  // errors — and there the card must keep showing them.
+  const { conversationCards } = await loadCardLayer()
+  const interrupted = conversationCards([{
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题', sourceSeq: 0 },
+      { kind: 'assistant', text: '正在改，先跑一遍测试。', sourceSeq: 1, intermediate: true },
+      { kind: 'assistant', text: 'No response requested.', sourceSeq: 2, synthetic: true },
+    ],
+  }])[0]
+  assert.equal(interrupted.answer.text, '正在改，先跑一遍测试。', 'the notice is skipped, the last real text is shown')
+
+  const errorOnly = conversationCards([{
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题', sourceSeq: 0 },
+      { kind: 'assistant', text: "There's an issue with the selected model (glm-4.6).", sourceSeq: 1, synthetic: true },
+    ],
+  }])[0]
+  assert.equal(errorOnly.answer.text, "There's an issue with the selected model (glm-4.6).",
+    'a turn that is nothing but a notice still shows it — that is the error report')
+})
+
+test('the badge counts the tool families a card singles out', async () => {
+  // Skill, MCP and subagent calls each explain a long turn in a way "工具 12"
+  // does not; anything else stays in the generic count.
+  const { conversationCards } = await loadCardLayer()
+  const entry = (name, callId) => ({ callId, name, arguments: null, result: null, error: null })
+  const thread = {
+    id: 'sess', dshSessionId: 'sess', title: 'T', parentId: null, messages: [
+      { kind: 'user', text: '问题', sourceSeq: 0 },
+      { kind: 'assistant', text: '答案。', sourceSeq: 1,
+        process: [entry('Bash', 'c1'), entry('Skill', 'c2'), entry('mcp__github__create_issue', 'c3'), entry('Agent', 'c4'), entry('Task', 'c5')] },
+    ],
+  }
+  const [card] = conversationCards([thread])
+  assert.deepEqual({ ...card.toolKinds }, { Skill: 1, MCP: 1, Agent: 2 }, 'Task is the subagent tool under its old name')
+  assert.equal(card.processCount, 5, 'the generic count still counts every call')
+})

@@ -31,6 +31,15 @@ const META_TYPES = new Set([
   'task-summary', 'speculation-accept', 'session-meta',
 ])
 
+// Hook runs are attachment lines (`attachment.type === "hook_success"`, 9 of
+// them in this corpus's top-level sessions) and stay skipped with the rest of
+// the attachment class. Deliberate, not an oversight: the payload is the hook's
+// INJECTED TEXT (hookName/hookEvent/stdout — in this very corpus, the ponytail
+// mode prompt), i.e. context the session received rather than anything it did.
+// Unlike a tool call, a skill load or a subagent spawn, a hook count would not
+// tell a reader what the turn was doing, so it earns no card-badge category.
+// Everything a session *does* is a tool_use block, and those are counted.
+
 // Injected scaffolding that is not something the human typed. Measured shapes
 // on a real corpus: `local-command-caveat` / `local-command-stdout` (command
 // output), `system-reminder` (hook and mode injection), and `task-notification`
@@ -108,6 +117,30 @@ function textOf(content) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   return content.filter(b => b?.type === 'text').map(b => b.text ?? '').join('')
+}
+
+/**
+ * How many extended-thinking blocks this API message carried. Only the COUNT
+ * leaves this module: the canvas summarizes thinking ("思考 3") and never shows
+ * it, so the text is dropped here rather than stored and hidden.
+ */
+function thinkingBlocks(content) {
+  if (!Array.isArray(content)) return 0
+  return content.filter(b => b?.type === 'thinking' || b?.type === 'redacted_thinking').length
+}
+
+/**
+ * Claude Code writes a few assistant messages itself and marks them with a
+ * placeholder model. Measured on a real corpus: 13 such messages, every one a
+ * machine notice — "There's an issue with the selected model" (7),
+ * "No response requested." (3), API/auth errors (2), one empty. 9 of the 13 are
+ * the ONLY text of their turn, which is exactly where a card must keep showing
+ * them (they are the error report); the other 3 were appended to an interrupted
+ * work turn of 6080-11274 characters, where the 22-character notice is the whole
+ * reason the card looked empty.
+ */
+function isSyntheticMessage(raw) {
+  return raw?.message?.model === '<synthetic>'
 }
 
 /** @returns {string|null} the human prompt on this line, or null if it is not a turn */
@@ -216,12 +249,24 @@ class AssistantGroup {
     this.turn = turn
     this.parts = []
     this.toolCalls = []
+    this.thinking = 0
+    this.synthetic = false
   }
   addText(text, time) {
     if (text.trim() !== '') this.parts.push(text)
     if (this.time === null) this.time = time
   }
-  /** The message event first, then its tool calls, so the card exists to fold into. */
+  /**
+   * The message event first, then its tool calls, so the card exists to fold into.
+   *
+   * `intermediate` and `synthetic` are the shape the CANVAS needs to tell a
+   * turn's output from its steps. They are facts about the message, not a verdict
+   * about which message is the answer — that decision stays on the client.
+   * Measured over one real corpus, of the 1043 text-bearing API messages:
+   *   - 882 carried a tool_use block (narration: "let me look at X first"),
+   *   - 161 were pure text and averaged 74% longer (the actual output),
+   *   - 13 were written by Claude Code itself (see isSyntheticMessage).
+   */
   drain() {
     const events = []
     if (this.parts.length > 0) {
@@ -229,7 +274,7 @@ class AssistantGroup {
         seq: this.seq,
         time: this.time ?? new Date().toISOString(),
         type: 'assistant/message',
-        data: { message: { content: [{ type: 'text', text: this.parts.join('\n') }] }, turn: this.turn, step: 1, messageId: this.messageId },
+        data: { message: { content: [{ type: 'text', text: this.parts.join('\n') }] }, turn: this.turn, step: 1, messageId: this.messageId, intermediate: this.toolCalls.length > 0, synthetic: this.synthetic, thinking: this.thinking },
       })
     }
     for (const call of this.toolCalls) events.push({ ...call, data: { ...call.data, turn: this.turn, step: 1 } })
@@ -401,6 +446,8 @@ export class TranscriptSource {
         cache.open.messageId = messageId
         cache.open.seq = seq
         cache.open.addText(textOf(raw.message?.content), time)
+        cache.open.thinking += thinkingBlocks(raw.message?.content)
+        cache.open.synthetic ||= isSyntheticMessage(raw)
         for (const event of translateLine(raw, seq, time)) {
           if (event.type === 'tool/call') {
             // Only a real tool_use block counts as "this session called it" —
